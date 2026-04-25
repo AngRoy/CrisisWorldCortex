@@ -23,11 +23,19 @@ from uuid import uuid4
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
-try:
-    from ..models import CrisisworldcortexAction, CrisisworldcortexObservation
-except ImportError:
-    from models import CrisisworldcortexAction, CrisisworldcortexObservation
+# Wire types use canonical ``CrisisWorldCortex.models`` (Session 7d): the
+# container's wheel install resolves this to one ``sys.modules`` entry,
+# matching the deep server modules already on canonical. The previous
+# dual-fallback fired ``from models import ...`` (bare) in container,
+# producing two class identities per discriminated-union variant — see
+# ``server/simulator/seir_model.py``'s import block for the full trap.
+from CrisisWorldCortex.models import CrisisworldcortexAction, CrisisworldcortexObservation
 
+# Internal server submodules use the dual-fallback pattern: the relative
+# form works under canonical loading (dev), and the bare fallback resolves
+# via ``server.<x>`` from PYTHONPATH=/app/env in the container. Both
+# branches resolve within the same physical ``server/`` tree, so single
+# class identity is preserved either way.
 try:
     from .simulator import WorldState, apply_tick, load_task, make_observation
 except ImportError:  # pragma: no cover - bare-name fallback for non-package runs

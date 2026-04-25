@@ -35,13 +35,17 @@ except Exception as e:  # pragma: no cover
         "openenv is required for the web interface. Install dependencies with '\n    uv sync\n'"
     ) from e
 
-try:
-    from ..models import CrisisworldcortexAction, CrisisworldcortexObservation
-    from .CrisisWorldCortex_environment import CrisisworldcortexEnvironment
-except ImportError:
-    from models import CrisisworldcortexAction, CrisisworldcortexObservation
-    from server.CrisisWorldCortex_environment import CrisisworldcortexEnvironment
+# Wire types use canonical ``CrisisWorldCortex.models`` (Session 7d):
+# the container's wheel install resolves this to one ``sys.modules`` entry,
+# matching the deep server modules (graders/, simulator/) that already use
+# canonical. The previous dual-fallback fired ``from models import ...``
+# (bare) in container, which loaded ``/app/env/models.py`` as a separate
+# ``sys.modules`` entry and produced two class identities per
+# discriminated-union variant — breaking ``ExecutedAction(action=...)``
+# validation in ``apply_tick``.
+from CrisisWorldCortex.models import CrisisworldcortexAction, CrisisworldcortexObservation
 
+from .CrisisWorldCortex_environment import CrisisworldcortexEnvironment
 
 # Create the app with web interface and README integration
 app = create_app(
