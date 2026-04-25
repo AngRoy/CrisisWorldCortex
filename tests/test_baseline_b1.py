@@ -290,3 +290,79 @@ def test_b1_resets_counters_at_episode_start() -> None:
     assert llm.tokens_used_for("b1:t3") == 0, (
         "stale counter from previous episode must be zeroed on episode start"
     )
+
+
+# ============================================================================
+# step_callback hook (Session 8)
+# ============================================================================
+
+
+def test_b1_step_callback_invoked_once_per_tick() -> None:
+    """The callback must fire exactly once per tick, with monotonic event.tick.
+
+    Inference.py's streaming [STEP] output relies on this contract — one
+    line per tick, no double-fires, no skipped ticks.
+    """
+    from baselines.flat_agent import B1StepEvent
+
+    env = _InProcessEnvAdapter(CrisisworldcortexEnvironment())
+    llm = _StubLLMClient(['{"kind": "no_op"}'] * 10)
+    agent = B1FlatAgent(env=env, llm=llm)
+
+    events: list[B1StepEvent] = []
+    trajectory = agent.run_episode(
+        task="outbreak_easy",
+        seed=0,
+        max_ticks=5,
+        step_callback=events.append,
+    )
+
+    assert len(events) == trajectory["steps_taken"], (
+        f"callback fired {len(events)} times for "
+        f"{trajectory['steps_taken']} ticks — expected exact match"
+    )
+    for i, ev in enumerate(events, start=1):
+        assert ev.tick == i, f"event.tick={ev.tick} should equal {i}"
+
+
+def test_b1_step_event_carries_rich_context() -> None:
+    """B1StepEvent fields: tick, action, reward, done, error, parse_failure,
+    raw_llm. Tick 1 fails to parse; tick 2+ succeeds. Verify both shapes.
+
+    Pins the public-API event shape so inference.py and (future) B2's
+    callback consumers don't drift.
+    """
+    from baselines.flat_agent import B1StepEvent
+
+    env = _InProcessEnvAdapter(CrisisworldcortexEnvironment())
+    llm = _StubLLMClient(["I cannot help with that."] + ['{"kind": "no_op"}'] * 5)
+    agent = B1FlatAgent(env=env, llm=llm)
+
+    events: list[B1StepEvent] = []
+    agent.run_episode(
+        task="outbreak_easy",
+        seed=0,
+        max_ticks=4,
+        step_callback=events.append,
+    )
+
+    assert len(events) >= 2
+
+    # Tick 1: parse failure. Submitted action is the synthetic V2-rejected
+    # PublicCommunication marker; env returns accepted=False; reward in [0,1].
+    e1 = events[0]
+    assert e1.tick == 1
+    assert e1.parse_failure is True
+    assert e1.error == "parse_failure"
+    assert e1.raw_llm == "I cannot help with that."
+    assert e1.action.kind == "public_communication"
+    assert 0.0 <= e1.reward <= 1.0
+    assert isinstance(e1.done, bool)
+
+    # Tick 2: clean parse. Submitted is NoOp. error must be None.
+    e2 = events[1]
+    assert e2.tick == 2
+    assert e2.parse_failure is False
+    assert e2.error is None
+    assert e2.action.kind == "no_op"
+    assert e2.raw_llm == '{"kind": "no_op"}'

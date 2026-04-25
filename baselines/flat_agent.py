@@ -37,7 +37,8 @@ import json
 import re
 import sys
 import textwrap
-from typing import Any, Dict, List, Optional, Protocol
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Literal, Optional, Protocol
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -51,9 +52,13 @@ from CrisisWorldCortex.models import (
 
 __all__ = [
     "B1FlatAgent",
-    "parse_action",
-    "serialize_observation",
+    "B1StepEvent",
+    "ErrorKind",
+    "StepCallback",
     "build_system_prompt",
+    "parse_action",
+    "parse_failure_marker",
+    "serialize_observation",
 ]
 
 
@@ -69,9 +74,55 @@ _CHARS_PER_TOKEN_ESTIMATE = 4
 _PROMPT_TOKEN_WARN_THRESHOLD = 1500
 
 
-def _parse_failure_marker() -> PublicCommunication:
+# ============================================================================
+# Per-tick callback contract (Session 8)
+# ============================================================================
+
+ErrorKind = Literal["parse_failure", "llm_call_failed", "env_step_failed"]
+
+
+@dataclass(frozen=True)
+class B1StepEvent:
+    """Per-tick event handed to ``step_callback``. Domain shape (not wire shape).
+
+    Consumers (``inference.py``, B2's tracer, future Cortex harnesses)
+    receive this exactly once per tick AFTER the action has been
+    submitted to the env. Mid-revision drafts (B2) do not produce events
+    — only the final per-tick action does, matching the design §20.1.1
+    "Never emits mid-revision drafts" rule.
+    """
+
+    tick: int  # 1-indexed
+    action: OuterActionPayload  # what was submitted (real or synthetic-rejection marker)
+    reward: float  # obs.reward from env.step (in [0, 1])
+    done: bool  # episode-termination flag
+    error: Optional[ErrorKind]  # None on the happy path
+    parse_failure: bool  # whether parse_action returned None this tick
+    raw_llm: str  # raw LLM response (forensic; possibly empty on llm_call_failed)
+
+
+StepCallback = Callable[[B1StepEvent], None]
+
+
+# ============================================================================
+# Synthetic V2-rejection marker (public API, shared by B1 / B2 / Cortex / B3)
+# ============================================================================
+
+
+def parse_failure_marker() -> PublicCommunication:
     """Synthetic V2-rejected action used to surface parse failures
-    through the env's reward signal as r_policy=0."""
+    through the env's reward signal as ``r_policy=0``.
+
+    Public API: used by B1, B2, Cortex (sessions 9+), and B3 (future).
+    Submitting this to ``env.step()`` causes the simulator to record
+    ``accepted=False`` in ``recent_action_log`` (per design §6.3 / §19),
+    which lands as ``r_policy=0`` in ``outer_reward`` — making the
+    reward signal punish parse failures appropriately.
+
+    Changes to this function's signature or behavior require careful
+    review of all callers because the rejection contract is shared
+    across every harness in the project.
+    """
     return PublicCommunication(
         audience="general",
         message_class="informational",
@@ -329,15 +380,13 @@ class B1FlatAgent:
         self._system_prompt = build_system_prompt()
         self._first_call_logged = False
 
-    # TODO(session-8): when B2 lands, refactor run_episode to take a
-    # step_callback parameter so inference.py and B2's matched-compute
-    # tracer both consume per-tick output without duplicating loop control.
-    # See inference.py:_run_episode for the parallel duplication.
     def run_episode(
         self,
         task: str,
         seed: int,
         max_ticks: int = 12,
+        *,
+        step_callback: Optional[StepCallback] = None,
     ) -> Dict[str, Any]:
         """Run one episode. Returns a trajectory dict.
 
@@ -345,9 +394,17 @@ class B1FlatAgent:
         the start so per-episode token counts don't accumulate across
         episodes. Per Session 7a §4: harness-driven reset, not auto.
 
-        ``task`` and ``seed`` are recorded in the trajectory dict.
-        Forwarding them to env.reset(...) is forward-compat with a
-        future env that learns task selection at reset time.
+        Args:
+            task: Forwarded into the trajectory dict; reserved for the
+                future env that learns task selection at reset time.
+            seed: Same — forward-compat for reproducibility logging.
+            max_ticks: Episode length cap.
+            step_callback: Optional ``Callable[[B1StepEvent], None]``.
+                Fires exactly once per tick AFTER the action has been
+                submitted to the env, with a frozen ``B1StepEvent``
+                describing what happened. Used by ``inference.py`` for
+                streaming ``[STEP]`` lines and by B2's matched-compute
+                tracer for budget logging.
         """
         self._llm.reset_counters(caller_id_prefix=f"{self.CALLER_ID_PREFIX}:")
         self._first_call_logged = False
@@ -362,6 +419,7 @@ class B1FlatAgent:
 
         for tick in range(1, max_ticks + 1):
             steps_taken = tick
+            tick_error: Optional[ErrorKind] = None
 
             user_prompt = serialize_observation(obs, last_reward=last_reward)
             self._maybe_warn_prompt_size(self._system_prompt, user_prompt)
@@ -374,7 +432,8 @@ class B1FlatAgent:
             response = self._llm.chat(caller_id=caller_id, messages=messages)
 
             payload = parse_action(response.content)
-            if payload is None:
+            tick_parse_failure = payload is None
+            if tick_parse_failure:
                 parse_failure_count += 1
                 snippet = (response.content or "").strip().replace("\n", " ")
                 if len(snippet) > 80:
@@ -384,28 +443,34 @@ class B1FlatAgent:
                     file=sys.stderr,
                     flush=True,
                 )
-                payload = _parse_failure_marker()
-                action_history.append(
-                    {
-                        "tick": tick,
-                        "submitted_kind": payload.kind,
-                        "parse_failure": True,
-                        "raw_llm": response.content,
-                    }
-                )
-            else:
-                action_history.append(
-                    {
-                        "tick": tick,
-                        "submitted_kind": payload.kind,
-                        "parse_failure": False,
-                        "raw_llm": response.content,
-                    }
-                )
+                payload = parse_failure_marker()
+                tick_error = "parse_failure"
+
+            action_history.append(
+                {
+                    "tick": tick,
+                    "submitted_kind": payload.kind,
+                    "parse_failure": tick_parse_failure,
+                    "raw_llm": response.content,
+                }
+            )
 
             obs = self._env.step(CrisisworldcortexAction(action=payload))
             last_reward = obs.reward if obs.reward is not None else 0.0
             rewards.append(last_reward)
+
+            if step_callback is not None:
+                step_callback(
+                    B1StepEvent(
+                        tick=tick,
+                        action=payload,
+                        reward=last_reward,
+                        done=bool(obs.done),
+                        error=tick_error,
+                        parse_failure=tick_parse_failure,
+                        raw_llm=response.content,
+                    )
+                )
 
             if obs.done:
                 break
