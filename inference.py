@@ -40,19 +40,11 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
-from baselines.flat_agent import (
-    build_system_prompt,
-    parse_action,
-    serialize_observation,
-)
-from cortex.llm_client import ChatMessage, LLMClient
-from CrisisWorldCortex.models import (
-    CrisisworldcortexAction,
-    OuterActionPayload,
-    PublicCommunication,
-)
+from baselines.flat_agent import B1FlatAgent, B1StepEvent
+from cortex.llm_client import LLMClient
+from CrisisWorldCortex.models import OuterActionPayload
 from CrisisWorldCortex.server.graders import terminal_bonus
 from CrisisWorldCortex.server.simulator import WorldState
 
@@ -271,15 +263,48 @@ def _make_env_from_spaces(base_url: str) -> Any:
 
 
 # ============================================================================
-# Episode loop
+# Episode loop — delegates to B1FlatAgent.run_episode(step_callback=...)
 # ============================================================================
 
 
-# TODO(session-8): when B2 lands, refactor B1FlatAgent.run_episode to take
-# a step_callback parameter so inference.py and B2's matched-compute tracer
-# both consume per-tick output without duplicating loop control. The
-# duplication below is ~25 lines of orchestration; parser/serializer/prompt
-# are imported helpers, not duplicated.
+class _SyncEnvAdapter:
+    """Bridges the HTTP/sync env client (returns ``StepResult``) to
+    B1FlatAgent's expected env shape (``reset() -> obs``, ``step(action)
+    -> obs``).
+
+    Pre-binds task-selection kwargs for the wire-level reset call. After
+    each operation, copies ``result.reward`` and ``result.done`` from the
+    StepResult wrapper onto the observation, since B1's loop reads them
+    off ``obs`` directly.
+    """
+
+    def __init__(self, env: Any, *, reset_kwargs: Dict[str, Any]) -> None:
+        self._env = env
+        self._reset_kwargs = dict(reset_kwargs)
+
+    def reset(self) -> Any:
+        result = self._env.reset(**self._reset_kwargs)
+        return self._normalize(result)
+
+    def step(self, action: Any) -> Any:
+        result = self._env.step(action)
+        return self._normalize(result)
+
+    @staticmethod
+    def _normalize(result: Any) -> Any:
+        # Some shapes: StepResult{observation, reward, done} (HTTP client)
+        # or a bare observation (in-process). Try .observation; fall back
+        # to result itself.
+        obs = getattr(result, "observation", result)
+        wrapper_reward = getattr(result, "reward", None)
+        if wrapper_reward is not None:
+            obs.reward = float(wrapper_reward)
+        wrapper_done = getattr(result, "done", None)
+        if wrapper_done:
+            obs.done = True
+        return obs
+
+
 def _run_episode(
     env: Any,
     llm: LLMClient,
@@ -288,39 +313,50 @@ def _run_episode(
     model_name: str,
     max_ticks: int,
 ) -> dict:
-    """Run one episode, streaming [START]/[STEP] lines, emit [END] at exit.
+    """Stream one episode end-to-end via ``B1FlatAgent.run_episode``.
 
-    Mirrors B1FlatAgent.run_episode's loop body but prints each step in
-    real time with flush=True so a hung container doesn't lose records.
-    Threads ``task_name`` / ``seed`` / ``max_ticks`` through env.reset()
-    over the wire (Session 7c).
+    The agent owns the per-tick LLM-call + parse + env.step loop; this
+    harness owns the [START] / [STEP] / [END] stdout protocol via a
+    callback. Net effect of the Session 8 refactor: ~80 LOC drop here.
     """
     print(_format_start_line(task_name, BENCHMARK, model_name), flush=True)
 
-    # Per-task counter reset — harness-driven per Session 7a §4.
-    llm.reset_counters(caller_id_prefix="inference:")
-
     rewards: List[float] = []
     parse_failure_count = 0
-    steps_taken = 0
-    error_str: Optional[str] = None
 
-    try:
-        # Session 7c: pass task selection over the wire. The framework
-        # serializes these as ResetRequest extra fields and the server
-        # forwards to CrisisworldcortexEnvironment.reset(**kwargs).
-        result = env.reset(
-            task_name=task_name,
-            seed=seed,
-            max_ticks=max_ticks,
-        )
-        obs = _extract_obs(result)
-    except Exception as exc:  # pragma: no cover - exercised manually
+    def step_cb(ev: B1StepEvent) -> None:
+        nonlocal parse_failure_count
+        rewards.append(ev.reward)
+        if ev.parse_failure:
+            parse_failure_count += 1
         print(
-            f"[ERROR] env.reset() failed: {exc!r}",
-            file=sys.stderr,
+            _format_step_line(
+                StepRecord(
+                    step=ev.tick,
+                    action_str=action_to_str(ev.action),
+                    reward=ev.reward,
+                    done=ev.done,
+                    error=ev.error,
+                )
+            ),
             flush=True,
         )
+
+    adapter = _SyncEnvAdapter(
+        env,
+        reset_kwargs={"task_name": task_name, "seed": seed, "max_ticks": max_ticks},
+    )
+    agent = B1FlatAgent(env=adapter, llm=llm)
+
+    try:
+        traj = agent.run_episode(
+            task=task_name,
+            seed=seed,
+            max_ticks=max_ticks,
+            step_callback=step_cb,
+        )
+    except Exception as exc:  # pragma: no cover - exercised manually
+        print(f"[ERROR] episode failed: {exc!r}", file=sys.stderr, flush=True)
         # Coarse failure signal: empty rewards -> lower-clamp score.
         score = compute_score([], terminal_bonus_value=0.0)
         print(_format_end_line(False, 0, score, []), flush=True)
@@ -333,125 +369,30 @@ def _run_episode(
             "parse_failure_count": 0,
         }
 
-    last_reward = 0.0
-    system_prompt = build_system_prompt()
-
-    for tick in range(1, max_ticks + 1):
-        steps_taken = tick
-        error_str = None
-
-        user_prompt = serialize_observation(obs, last_reward=last_reward)
-        caller_id = f"inference:t{tick}"
-
-        try:
-            response = llm.chat(
-                caller_id=caller_id,
-                messages=[
-                    ChatMessage(role="system", content=system_prompt),
-                    ChatMessage(role="user", content=user_prompt),
-                ],
-            )
-            raw = response.content
-        except Exception as exc:  # pragma: no cover - exercised manually
-            print(
-                f"[WARN] inference: llm.chat failed at tick={tick}: {exc!r}",
-                file=sys.stderr,
-                flush=True,
-            )
-            raw = ""
-            error_str = "llm_call_failed"
-
-        payload = parse_action(raw)
-        if payload is None:
-            parse_failure_count += 1
-            snippet = (raw or "").strip().replace("\n", " ")[:80]
-            print(
-                f"[WARN] inference: parse_failure at tick={tick} "
-                f"caller={caller_id!r} raw={snippet!r}",
-                file=sys.stderr,
-                flush=True,
-            )
-            # Synthetic V2-rejected stand-in (matches B1 §6 contract):
-            # env returns accepted=False -> r_policy=0 lands as reward signal.
-            payload = PublicCommunication(
-                audience="general",
-                message_class="informational",
-                honesty=0.0,
-            )
-            if error_str is None:
-                error_str = "parse_failure"
-
-        try:
-            result = env.step(CrisisworldcortexAction(action=payload))
-            obs = _extract_obs(result)
-            reward = _extract_reward(result, obs)
-            done = _extract_done(result, obs)
-        except Exception as exc:  # pragma: no cover - exercised manually
-            print(
-                f"[ERROR] env.step() failed at tick={tick}: {exc!r}",
-                file=sys.stderr,
-                flush=True,
-            )
-            reward = 0.0
-            done = True
-            error_str = error_str or "env_step_failed"
-
-        rewards.append(reward)
-        last_reward = reward
-
-        record = StepRecord(
-            step=tick,
-            action_str=action_to_str(payload),
-            reward=reward,
-            done=bool(done),
-            error=error_str,
-        )
-        print(_format_step_line(record), flush=True)
-
-        if done:
-            break
-
     # Harness can't read state.terminal over the wire — pass 0.0. The
     # trainer (Session 14, reward_shaping.py) composes the real bonus
     # from server-side state, not from this stdout score.
     score = compute_score(rewards, terminal_bonus_value=0.0)
     success = score >= SUCCESS_THRESHOLD
     print(
-        _format_end_line(success=success, steps=steps_taken, score=score, rewards=rewards),
+        _format_end_line(
+            success=success,
+            steps=traj["steps_taken"],
+            score=score,
+            rewards=rewards,
+        ),
         flush=True,
     )
 
-    tokens = sum(llm.tokens_used_for(f"inference:t{i}") for i in range(1, steps_taken + 1))
     return {
         "task": task_name,
-        "steps_taken": steps_taken,
+        "steps_taken": traj["steps_taken"],
         "score": score,
         "success": success,
         "rewards": rewards,
         "parse_failure_count": parse_failure_count,
-        "tokens": tokens,
+        "tokens": traj.get("tokens_total", 0),
     }
-
-
-def _extract_obs(result: Any) -> Any:
-    """Normalise both ``StepResult`` (HTTP client) and bare observation
-    (in-process env) shapes to the observation."""
-    return getattr(result, "observation", result)
-
-
-def _extract_reward(result: Any, obs: Any) -> float:
-    """Reward field can live on ``StepResult.reward`` or ``obs.reward``."""
-    r = getattr(result, "reward", None)
-    if r is None:
-        r = getattr(obs, "reward", None)
-    return float(r) if r is not None else 0.0
-
-
-def _extract_done(result: Any, obs: Any) -> bool:
-    d = getattr(result, "done", None)
-    if d is None:
-        d = getattr(obs, "done", False)
-    return bool(d)
 
 
 # ============================================================================

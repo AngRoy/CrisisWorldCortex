@@ -429,29 +429,47 @@ class B1FlatAgent:
                 ChatMessage(role="user", content=user_prompt),
             ]
             caller_id = f"{self.CALLER_ID_PREFIX}:t{tick}"
-            response = self._llm.chat(caller_id=caller_id, messages=messages)
 
-            payload = parse_action(response.content)
-            tick_parse_failure = payload is None
-            if tick_parse_failure:
-                parse_failure_count += 1
-                snippet = (response.content or "").strip().replace("\n", " ")
-                if len(snippet) > 80:
-                    snippet = snippet[:77] + "..."
+            # LLM-call failures (auth, network, rate-limit) are treated as
+            # an empty response that flows through the parse-failure path —
+            # synthetic V2-rejected marker keeps the episode going so the
+            # reward signal still penalises lost ticks (r_policy=0). The
+            # event records error='llm_call_failed' so observers can tell
+            # this apart from a "model emitted prose" parse failure.
+            raw_content = ""
+            try:
+                response = self._llm.chat(caller_id=caller_id, messages=messages)
+                raw_content = response.content
+            except Exception as exc:  # pragma: no cover - exercised manually
                 print(
-                    f"[WARN] b1: parse_failure at tick={tick} caller={caller_id!r} raw={snippet!r}",
+                    f"[WARN] b1: llm.chat failed at tick={tick} caller={caller_id!r}: {exc!r}",
                     file=sys.stderr,
                     flush=True,
                 )
+                tick_error = "llm_call_failed"
+
+            payload = parse_action(raw_content)
+            tick_parse_failure = payload is None
+            if tick_parse_failure:
+                parse_failure_count += 1
+                snippet = (raw_content or "").strip().replace("\n", " ")
+                if len(snippet) > 80:
+                    snippet = snippet[:77] + "..."
+                if tick_error is None:
+                    print(
+                        f"[WARN] b1: parse_failure at tick={tick} caller={caller_id!r} raw={snippet!r}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    tick_error = "parse_failure"
                 payload = parse_failure_marker()
-                tick_error = "parse_failure"
 
             action_history.append(
                 {
                     "tick": tick,
                     "submitted_kind": payload.kind,
                     "parse_failure": tick_parse_failure,
-                    "raw_llm": response.content,
+                    "raw_llm": raw_content,
                 }
             )
 
@@ -468,7 +486,7 @@ class B1FlatAgent:
                         done=bool(obs.done),
                         error=tick_error,
                         parse_failure=tick_parse_failure,
-                        raw_llm=response.content,
+                        raw_llm=raw_content,
                     )
                 )
 
