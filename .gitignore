@@ -10,6 +10,7 @@ __pycache__/
 coverage.xml
 htmlcov/
 .pytest_cache/
+.pre-commit-cache/
 .ruff_cache/
 .codex-ruff-cache/
 .mypy_cache/

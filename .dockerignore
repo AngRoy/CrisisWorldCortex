@@ -23,6 +23,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.pre-commit-cache/
 .ruff_cache/
 .codex-ruff-cache/
 .mypy_cache/
