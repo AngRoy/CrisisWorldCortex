@@ -1,0 +1,53 @@
+# Bytecode and interpreter caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Test and coverage output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.codex-ruff-cache/
+.mypy_cache/
+.pyre/
+.uv-cache/
+.tox/
+.nox/
+
+# Python packaging and build output
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+.codex-venv/
+venv/
+env/
+ENV/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Local agent and editor state
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

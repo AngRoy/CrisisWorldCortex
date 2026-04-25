@@ -1,0 +1,50 @@
+# Build-context exclusions for `docker build .` (both root Dockerfile
+# and `docker build -f server/Dockerfile .`).
+#
+# Without these, the local .venv/ (a Windows-built Python virtualenv)
+# leaks into the build context and uv tries to reuse it inside the
+# Linux container — fails with "no Python executable was found".
+# Discovered during Session 7c's manual smoke test.
+
+# Local virtualenv — incompatible with Linux containers
+.venv/
+.codex-venv/
+
+# VCS / tooling state
+.git/
+.gitignore
+.gitattributes
+.github/
+.pre-commit-config.yaml
+.claude/
+
+# Python bytecode and test artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.codex-ruff-cache/
+.mypy_cache/
+.uv-cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build output
+dist/
+build/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# Docs (not needed inside the container — frontmatter / setup notes
+# are for humans and CI, not the running env)
+*.md
+!README.md

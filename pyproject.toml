@@ -1,0 +1,69 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-CrisisWorldCortex"
+version = "0.1.0"
+description = "Crisisworldcortex environment for OpenEnv"
+requires-python = ">=3.10"
+dependencies = [
+    # Core OpenEnv runtime (provides FastAPI server + HTTP client types)
+    # install from github
+    # "openenv-core[core] @ git+https://github.com/meta-pytorch/OpenEnv.git",
+    "openenv-core[core]==0.2.3",
+    # OpenAI SDK — used by cortex/llm_client.py against the HF Router
+    # (router.huggingface.co/v1 is OpenAI-compatible). Pinned to 2.x major:
+    # 2.0 introduced API changes from 1.x, real HF Router calls haven't
+    # exercised the pinned version yet, and locking the major prevents a
+    # future uv sync from silently pulling 3.x. Bump explicitly when 3.0
+    # ships and we've verified compatibility.
+    "openai>=2.0,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit>=4.0.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.8.0",
+]
+
+[project.scripts]
+# Server entry point - enables running via: uv run --project . server
+# or: python -m CrisisWorldCortex.server.app
+server = "CrisisWorldCortex.server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["CrisisWorldCortex", "CrisisWorldCortex.server"]
+package-dir = { "CrisisWorldCortex" = ".", "CrisisWorldCortex.server" = "server" }
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[tool.ruff.lint]
+select = [
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "I",
+]
+ignore = ["E741"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["CrisisWorldCortex", "baselines", "client", "cortex", "models", "server"]
