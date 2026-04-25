@@ -37,7 +37,6 @@ Score formula (Session 7a §7 + 7b §9.4 revision): see compute_score.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 from dataclasses import dataclass
@@ -225,23 +224,38 @@ def format_episode_trace(
 # ============================================================================
 
 
+_DOCKER_READY_TIMEOUT_S = 120.0
+
+
 def _make_env_from_docker(image_name: str) -> Any:
     """Spin up Docker container, return a sync wrapper.
 
-    Two distinct asyncio usages:
-    - ``asyncio.run(...)`` for the constructor (one-shot async startup;
-      ``EnvClient.from_docker_image`` is async).
-    - ``.sync()`` for the returned client (each ``.reset()`` /
-      ``.step()`` call runs sync against a background event loop owned
-      by ``SyncEnvClient``).
+    Mirrors triagesieve_env's manual ``LocalDockerProvider`` pattern
+    rather than ``EnvClient.from_docker_image`` because the convenience
+    constructor's default 30s ``wait_for_ready`` is too tight on Windows
+    Docker Desktop after a cold image build (Session 7c smoke timed out
+    at 30s; first-start commonly takes 45–90s here). 120s gives ample
+    headroom without papering over a real hang.
 
-    Mixing patterns is fine because they're at different lifecycle
-    stages (startup vs steady-state). Don't try to unify them.
+    The ``SyncEnvClient`` returned by ``.sync()`` owns a persistent
+    background event loop and routes ``connect()`` / ``reset()`` /
+    ``step()`` through it. We MUST call ``connect()`` on the sync
+    wrapper (not on the async client via ``asyncio.run``), or the
+    one-shot loop ``asyncio.run`` creates closes immediately and
+    leaves the connection tied to a dead loop — subsequent ``reset()``
+    on the persistent loop then raises ``Event loop is closed``.
     """
+    from openenv.core.containers.runtime.providers import LocalDockerProvider
+
     from CrisisWorldCortex import CrisisworldcortexEnv
 
-    async_client = asyncio.run(CrisisworldcortexEnv.from_docker_image(image_name))
-    return async_client.sync()
+    provider = LocalDockerProvider()
+    base_url = provider.start_container(image_name)
+    provider.wait_for_ready(base_url, timeout_s=_DOCKER_READY_TIMEOUT_S)
+    async_client = CrisisworldcortexEnv(base_url=base_url, provider=provider)
+    sync_env = async_client.sync()
+    sync_env.connect()
+    return sync_env
 
 
 def _make_env_from_spaces(base_url: str) -> Any:
