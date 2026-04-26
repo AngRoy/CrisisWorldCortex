@@ -28,7 +28,7 @@ Wire-protocol classes are template-locked: `CrisisworldcortexAction`, `Crisiswor
 
 - The four wire-protocol class names above. Do not rename.
 - Flat package layout: `pyproject.toml:package-dir` maps `CrisisWorldCortex` to repo root. Do not move `models.py`, `client.py`, or root `__init__.py` off root.
-- Dual-import fallback pattern (`try: from ..models / except: from models`) in every `server/` module that imports `models`.
+- Canonical wire-type imports in every `server/` module: `from CrisisWorldCortex.models import ...`.
 - `pyproject.toml`: deps, entry points, `packages`, `package-dir`.
 - `openenv.yaml` keys: `spec_version`, `runtime`, `app`, `port`.
 - `server/app.py:create_app(...)` call signature.
@@ -47,7 +47,7 @@ Wire-protocol classes are template-locked: `CrisisworldcortexAction`, `Crisiswor
 ## Import-graph rule (enforced)
 
 - `cortex/` imports `models` and `cortex/*` only.
-- `server/` imports `models`, `openenv.core.*`, `server/*` only. No `cortex/*`, no `training/*`, no `baselines/*`, no `demo/*`.
+- `server/` imports `models`, `openenv.core.*`, and package-relative `server` internals only. No `cortex/*`, no `training/*`, no `baselines/*`, no `demo/*`.
 - `baselines/` imports `models`, `client`, `cortex/*`. Must not import `server/*` — baselines hit the env over HTTP like production.
 - `training/` imports `models`, `client`, `cortex/*`, `server.graders` (reward-name constants only). Must not import `server.simulator/*`.
 - `demo/` imports `cortex.schemas` (types only) and stdlib. Must not import `server/*`, `training/*`, `baselines/*`, `cortex.council`, `cortex.routing_policy`.
@@ -70,9 +70,9 @@ Do not restate subsystem APIs in this file or in other subsystem files.
 
 - Wire package: `from CrisisWorldCortex import CrisisworldcortexAction, ...`.
 - Dev / research directories (sibling-of-repo-root): bare-name — `import cortex`, `import baselines`, `import training`, `import demo`, `import scripts`.
-- Server-internal: `from server.simulator import ...`, `from server.graders import ...`.
+- Server-internal: package-relative imports such as `from .simulator import ...` or `from ..simulator import ...`; do not use `from CrisisWorldCortex.server...`.
 - **Cross-boundary into wire types**: when a dev / research directory (`cortex/`, `baselines/`, `training/`, `demo/`) crosses into the wire-protocol package, use `from CrisisWorldCortex.models import …` — **never** bare `from models import …`. Bare-name only applies to dev-directory siblings and to same-subpackage imports inside `server/`. The dual-path import creates distinct `sys.modules` entries and breaks Pydantic discriminator checks across import boundaries (verified by session 4's class-identity bug; `cortex/schemas.py:21` documents the canonicalised import).
-- **Cross-boundary into wire types from deep server modules**: files inside `server/` more than one level deep (e.g., `server/simulator/seir_model.py`, `server/graders/outer_reward.py`) cannot use the `try: from ..models / except: from models` fallback — `..models` from a two-level-deep module resolves to a non-existent `CrisisWorldCortex.server.models`, the fallback fires, and bare `models` loads as a separate `sys.modules` entry. Use the absolute path: `from CrisisWorldCortex.models import …`. Session 4 (`cortex/schemas.py:21`) and Session 5a (`server/simulator/seir_model.py`, `server/simulator/tasks.py`) document this with inline comments. The dual-import fallback in `server/CrisisWorldCortex_environment.py` and `server/app.py` works only because they are one level deep (`..models` → `CrisisWorldCortex.models` directly).
+- **Cross-boundary into wire types from server modules**: every `server/` file imports wire types with `from CrisisWorldCortex.models import …`. Do not use `from ..models` or bare `from models`; both can create a second class identity under different launch modes and break Pydantic discriminated-union validation.
 
 ## Commands (Git Bash; quote Windows paths)
 

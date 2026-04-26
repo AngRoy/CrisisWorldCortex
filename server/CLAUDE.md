@@ -15,24 +15,33 @@ Cortex code (brains, subagents, router, metacognition), LLM clients, training lo
 
 ## Import rule (binding)
 
-**Inside `server/`, use `from server.simulator import …`, never `from CrisisWorldCortex.server.simulator import …`.** Same rule for `server.graders`.
+**Inside `server/`, use package-relative imports for server internals**:
+`from .simulator import ...` from one-level modules and
+`from ..simulator import ...` from nested modules. This works when the
+server is loaded as either `CrisisWorldCortex.server.*` (`uv run server`)
+or top-level `server.*` (Docker / `uvicorn server.app:app`). Never use
+`from CrisisWorldCortex.server...` for server-internal imports.
 
-For `models`, use the dual-import fallback in every new server module that needs it:
+For `models`, use the canonical package path in every server module that needs it:
 
 ```python
-try:
-    from ..models import CrisisworldcortexAction, CrisisworldcortexObservation
-except (ImportError, ModuleNotFoundError):
-    from models import CrisisworldcortexAction, CrisisworldcortexObservation
+from CrisisWorldCortex.models import CrisisworldcortexAction, CrisisworldcortexObservation
 ```
 
-The server runs under ≥ 3 import contexts (`python -m server.app`, `uvicorn server.app:app`, Docker `cd /app/env && uvicorn server.app:app`); the fallback is load-bearing.
+The server runs under multiple import contexts (`uv run server`,
+`uvicorn server.app:app`, Docker `cd /app/env && uvicorn server.app:app`).
+Canonical wire imports keep Pydantic model identity stable across those modes.
 
-**Wire-type imports from deep modules (binding)**: the dual-import fallback above only works for files **one level** inside `server/` (`server/CrisisWorldCortex_environment.py`, `server/app.py`). Two-or-more-levels-deep files (`server/simulator/*`, `server/graders/*`) **must** use `from CrisisWorldCortex.models import …` directly — `..models` from those depths resolves to a non-existent `CrisisWorldCortex.server.models`, the fallback fires, and bare `models` loads as a separate `sys.modules` entry, breaking Pydantic discriminator validation against types imported via the canonical path. Session 5a's `server/simulator/seir_model.py` and `server/simulator/tasks.py` document this with inline comments.
+**Wire-type imports from deep modules (binding)**: two-or-more-levels-deep
+files (`server/simulator/*`, `server/graders/*`) must still use
+`from CrisisWorldCortex.models import …`; `..models` from those depths
+resolves to a non-existent `CrisisWorldCortex.server.models`, and a bare
+fallback loads a second `models` module.
 
 ## Allowed imports
 
-`models` (via dual-import fallback), `openenv.core.*`, `server/simulator/*`, `server/graders/*`, stdlib, FastAPI, Pydantic, numpy.
+`CrisisWorldCortex.models`, package-relative `server/simulator/*` and
+`server/graders/*`, `openenv.core.*`, stdlib, FastAPI, Pydantic, numpy.
 
 ## Forbidden imports
 
