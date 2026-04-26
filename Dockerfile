@@ -11,6 +11,7 @@
 #   - CMD (`cd /app/env && uvicorn server.app:app --host 0.0.0.0 --port 8000`)
 #   - HEALTHCHECK on /health
 #   - PYTHONPATH=/app/env:$PYTHONPATH (so the dual-import fallback resolves)
+#   - git installed in both builder and runtime stages for HF Spaces dev-mode
 # Drift will cause the hackathon validator (which builds this root file) and
 # `openenv build` (which builds server/Dockerfile) to produce different images.
 # Update both together. Run `diff Dockerfile server/Dockerfile` after any
@@ -75,6 +76,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM ${BASE_IMAGE:-ghcr.io/meta-pytorch/openenv-base:latest}
 
 WORKDIR /app
+
+# HF Spaces dev-mode runs git config in the final stage after this image is
+# assembled; keep git available outside the builder stage.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy the virtual environment from builder
 COPY --from=builder /app/env/.venv /app/.venv
