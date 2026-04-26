@@ -35,6 +35,14 @@ class CriticSubagent(_LLMSubagent):
         sections.append(f"# Target plan (id={input.target_plan_id})\n{target_json}")
         if input.prior_belief is not None:
             sections.append(f"# WM BeliefState\n{input.prior_belief.model_dump_json(indent=2)}")
+        # Item B (Phase A review pass): cross-brain Critic. When the Council
+        # routes a cross-brain challenge, it sets peer_perception to the
+        # challenger's PerceptionReport so the Critic has both domain views.
+        if input.peer_perception is not None:
+            sections.append(
+                f"# Peer perception (challenger {input.peer_perception.brain})\n"
+                f"{input.peer_perception.model_dump_json(indent=2)}"
+            )
         return "\n\n".join(sections)
 
     @staticmethod

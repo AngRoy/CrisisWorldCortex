@@ -164,6 +164,11 @@ class SubagentInput(BaseModel):
     target_plan_id: Optional[str] = None
     last_reward: float
     recent_action_log_excerpt: List[ExecutedAction] = Field(default_factory=list)
+    # Item B (Phase A review pass) - cross-brain Critic only. When set, the
+    # CriticSubagent USR includes the challenger's PerceptionReport alongside
+    # the target's BeliefState + plan, costing approx 200 extra tokens per
+    # cross-brain challenge (affordable within TICK_BUDGET=6000).
+    peer_perception: Optional[PerceptionReport] = None
 
 
 class BrainLensedObservation(BaseModel):
