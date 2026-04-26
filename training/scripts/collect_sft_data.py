@@ -273,59 +273,68 @@ def collect() -> int:
 
     for task in tasks:
         for ep in range(NUM_EPISODES):
+            env = CrisisworldcortexEnv(base_url=ENV_URL).sync()
             try:
-                env = CrisisworldcortexEnv(base_url=ENV_URL)
-                obs = env.reset(task_name=task, seed=ep, max_ticks=EPISODE_TICKS)
+                reset_result = env.reset(task_name=task, seed=ep, max_ticks=EPISODE_TICKS)
+                obs = (
+                    reset_result.observation
+                    if hasattr(reset_result, "observation")
+                    else reset_result
+                )
             except Exception as exc:
                 log(f"WARN env.reset failed task={task} ep={ep}: {exc}")
+                env.close()
                 continue
-            last_reward = 0.0
-            for tick in range(EPISODE_TICKS):
-                user_prompt = serialize_observation(obs, last_reward)
-                try:
-                    completion = call_teacher(client, _SYSTEM_PROMPT_BODY, user_prompt)
-                except Exception as exc:
-                    log(f"WARN teacher call failed task={task} ep={ep} tick={tick}: {exc}")
-                    break
-                action_dict = parse_action_json(completion)
-                if action_dict is None:
-                    parse_fail_count += 1
-                    break
-                # Submit to env (Pydantic validates here).
-                try:
-                    result = env.step(
-                        CrisisworldcortexAction.model_validate({"action": action_dict})
+            try:
+                last_reward = 0.0
+                for tick in range(EPISODE_TICKS):
+                    user_prompt = serialize_observation(obs, last_reward)
+                    try:
+                        completion = call_teacher(client, _SYSTEM_PROMPT_BODY, user_prompt)
+                    except Exception as exc:
+                        log(f"WARN teacher call failed task={task} ep={ep} tick={tick}: {exc}")
+                        break
+                    action_dict = parse_action_json(completion)
+                    if action_dict is None:
+                        parse_fail_count += 1
+                        break
+                    # Submit to env (Pydantic validates here).
+                    try:
+                        result = env.step(
+                            CrisisworldcortexAction.model_validate({"action": action_dict})
+                        )
+                    except Exception as exc:
+                        log(f"WARN env.step rejected task={task} ep={ep} tick={tick}: {exc}")
+                        parse_fail_count += 1
+                        break
+                    next_obs = result.observation if hasattr(result, "observation") else result
+                    reward = next_obs.reward if next_obs.reward is not None else 0.0
+                    accepted = bool(
+                        next_obs.recent_action_log and next_obs.recent_action_log[-1].accepted
                     )
-                except Exception as exc:
-                    log(f"WARN env.step rejected task={task} ep={ep} tick={tick}: {exc}")
-                    parse_fail_count += 1
-                    break
-                next_obs = result.observation if hasattr(result, "observation") else result
-                reward = next_obs.reward if next_obs.reward is not None else 0.0
-                accepted = bool(
-                    next_obs.recent_action_log and next_obs.recent_action_log[-1].accepted
-                )
-                if not accepted:
-                    rejected_count += 1
-                elif reward < MIN_REWARD_THRESHOLD:
-                    low_reward_count += 1
-                else:
-                    rows.append(
-                        {
-                            "prompt": user_prompt,
-                            "completion": json.dumps(action_dict, separators=(",", ":")),
-                            "task": task,
-                            "seed": ep,
-                            "tick": tick,
-                            "reward": float(reward),
-                            "accepted": True,
-                        }
-                    )
-                    kept_count += 1
-                last_reward = float(reward)
-                obs = next_obs
-                if next_obs.done:
-                    break
+                    if not accepted:
+                        rejected_count += 1
+                    elif reward < MIN_REWARD_THRESHOLD:
+                        low_reward_count += 1
+                    else:
+                        rows.append(
+                            {
+                                "prompt": user_prompt,
+                                "completion": json.dumps(action_dict, separators=(",", ":")),
+                                "task": task,
+                                "seed": ep,
+                                "tick": tick,
+                                "reward": float(reward),
+                                "accepted": True,
+                            }
+                        )
+                        kept_count += 1
+                    last_reward = float(reward)
+                    obs = next_obs
+                    if next_obs.done:
+                        break
+            finally:
+                env.close()
             if (ep + 1) % 5 == 0:
                 log(
                     f"[{task}] {ep + 1}/{NUM_EPISODES} kept={kept_count} "

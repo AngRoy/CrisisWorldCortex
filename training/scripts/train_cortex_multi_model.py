@@ -398,8 +398,8 @@ def main() -> int:
     tasks = tuple(t.strip() for t in TASKS_CSV.split(",") if t.strip())
     log(f"tasks={tasks}")
 
-    def make_env() -> CrisisworldcortexEnv:
-        return CrisisworldcortexEnv(base_url=ENV_URL)
+    def make_env() -> Any:
+        return CrisisworldcortexEnv(base_url=ENV_URL).sync()
 
     train_dataset = Dataset.from_dict(
         {
@@ -419,10 +419,16 @@ def main() -> int:
     ) -> list[float]:
         rewards: list[float] = []
         for _completion, t, s in zip(completions, task, seed):
+            env = None
             try:
                 council = Council(brains=brains, routing_policy=router_policy)
                 env = make_env()
-                obs = env.reset(task_name=t, seed=int(s), max_ticks=EPISODE_TICKS)
+                reset_result = env.reset(task_name=t, seed=int(s), max_ticks=EPISODE_TICKS)
+                obs = (
+                    reset_result.observation
+                    if hasattr(reset_result, "observation")
+                    else reset_result
+                )
                 cumulative = 0.0
                 last_reward = 0.0
                 for _ in range(EPISODE_TICKS):
@@ -438,6 +444,9 @@ def main() -> int:
             except Exception as exc:
                 log(f"WARN rollout failed task={t} seed={s}: {exc}")
                 rewards.append(-1.0)
+            finally:
+                if env is not None:
+                    env.close()
         return rewards
 
     # ---- GRPO config + trainer ----

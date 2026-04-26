@@ -339,8 +339,8 @@ def main() -> int:
     tasks = tuple(t.strip() for t in TASKS_CSV.split(",") if t.strip())
     log(f"tasks={tasks}")
 
-    def make_env() -> CrisisworldcortexEnv:
-        return CrisisworldcortexEnv(base_url=ENV_URL)
+    def make_env() -> Any:
+        return CrisisworldcortexEnv(base_url=ENV_URL).sync()
 
     SYSTEM_PROMPT = build_system_prompt()
 
@@ -363,9 +363,17 @@ def main() -> int:
     meta: list[dict] = []
     for entry in seed_pool:
         env = make_env()
-        obs = env.reset(task_name=entry["task"], seed=entry["seed"], max_ticks=EPISODE_TICKS)
-        prompts.append(make_chat_prompt(obs))
-        meta.append(entry)
+        try:
+            result = env.reset(
+                task_name=entry["task"],
+                seed=entry["seed"],
+                max_ticks=EPISODE_TICKS,
+            )
+            obs = result.observation if hasattr(result, "observation") else result
+            prompts.append(make_chat_prompt(obs))
+            meta.append(entry)
+        finally:
+            env.close()
 
     train_dataset = Dataset.from_dict(
         {
@@ -387,16 +395,19 @@ def main() -> int:
         rewards: list[float] = []
         for completion, t, s in zip(completions, task, seed):
             env = make_env()
-            env.reset(task_name=t, seed=int(s), max_ticks=EPISODE_TICKS)
-            payload = parse_action(completion) or parse_failure_marker()
             try:
-                result = env.step(CrisisworldcortexAction(action=payload))
-                obs = result.observation if hasattr(result, "observation") else result
-                reward = obs.reward if obs.reward is not None else 0.0
-                rewards.append(float(reward))
-            except Exception as exc:
-                log(f"WARN env.step failed task={t} seed={s}: {exc}")
-                rewards.append(-1.0)
+                env.reset(task_name=t, seed=int(s), max_ticks=EPISODE_TICKS)
+                payload = parse_action(completion) or parse_failure_marker()
+                try:
+                    result = env.step(CrisisworldcortexAction(action=payload))
+                    obs = result.observation if hasattr(result, "observation") else result
+                    reward = obs.reward if obs.reward is not None else 0.0
+                    rewards.append(float(reward))
+                except Exception as exc:
+                    log(f"WARN env.step failed task={t} seed={s}: {exc}")
+                    rewards.append(-1.0)
+            finally:
+                env.close()
         return rewards
 
     # ---- GRPO training ----
