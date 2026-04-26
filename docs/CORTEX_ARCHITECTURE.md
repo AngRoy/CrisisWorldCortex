@@ -705,7 +705,7 @@ Decisions are grouped by layer. Each entry: **decision** / **rationale** /
 
 19. **Reasoning summary: a 1–2 sentence string from the Planner's `action_sketch`.** / Fits the 400-char `BrainRecommendation.reasoning_summary` cap. / Considered an LLM call to produce a summary; rejected — Brain Executive must be Python-only per cortex/CLAUDE.md.
 
-20. **`evidence` field on `BrainRecommendation` = union of all `EvidenceCitation` lists from `BeliefState`, `CandidatePlan`, `CriticReport`.** / Ensures the council sees the brain's full evidence chain. / Considered Critic only; rejected — claims with no upstream evidence get zeroed `r_proto`.
+20. **`evidence` field on `BrainRecommendation` = union of all `EvidenceCitation` lists from `BeliefState`, `CandidatePlan`, `CriticReport`.** / Ensures the council sees the brain's full evidence chain. / Considered Critic only; rejected — claims with no upstream evidence get zeroed `r_proto`. **(Session 11 implementation note — M-FR-3)** Implementation reads evidence from `PerceptionReport.evidence` + `BeliefState.evidence` only, since `CandidatePlan` and `CriticReport` schemas (Session 9) carry no `evidence` field. Adding evidence fields to those schemas was rejected as schema-churn risk; the perception+beliefs union captures the actionable evidence chain since plans/critics derive from beliefs. See `cortex/brains/_executive.py:aggregate_brain_outputs`.
 
 21. **Brain identifier strings: `"epidemiology"`, `"logistics"`, `"governance"` (lowercase, full word).** / Readable and grep-friendly. / Considered abbreviations (epi, log, gov); rejected — log-grep collisions.
 
