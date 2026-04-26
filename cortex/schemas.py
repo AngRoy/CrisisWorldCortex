@@ -35,7 +35,12 @@ from pydantic import BaseModel, Field
 # OWN internal types (cortex.subagents, cortex.brains, etc.) continue
 # to use bare-name sibling imports per Phase 1 C1 — only the cross-package
 # wire boundary is canonicalised.
-from CrisisWorldCortex.models import ExecutedAction, OuterActionPayload, RegionId
+from CrisisWorldCortex.models import (
+    CrisisworldcortexObservation,
+    ExecutedAction,
+    OuterActionPayload,
+    RegionId,
+)
 
 EpistemicPhase = Literal["Divergence", "Challenge", "Narrowing", "Convergence"]
 
@@ -159,6 +164,22 @@ class SubagentInput(BaseModel):
     target_plan_id: Optional[str] = None
     last_reward: float
     recent_action_log_excerpt: List[ExecutedAction] = Field(default_factory=list)
+
+
+class BrainLensedObservation(BaseModel):
+    """Per-brain salience-mapped observation per Phase A §2 A1.
+
+    Lenses do not strip fields from the raw observation (Decision 13);
+    they project a salience map alongside it. ``derived_features`` lets
+    each brain pre-compute domain-specific scalars once and pass them
+    to all three of its LLM subagents without re-reading ``raw_obs``.
+    """
+
+    brain: Literal["epidemiology", "logistics", "governance"]
+    raw_obs: CrisisworldcortexObservation
+    salient_field_ids: List[str] = Field(default_factory=list)
+    derived_features: Dict[str, float] = Field(default_factory=dict)
+    last_reward: float
 
 
 # ============================================================================

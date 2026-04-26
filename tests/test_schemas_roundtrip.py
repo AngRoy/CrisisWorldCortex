@@ -8,6 +8,7 @@ types in real flows.
 
 from cortex.schemas import (
     BeliefState,
+    BrainLensedObservation,
     BrainRecommendation,
     CandidatePlan,
     CouncilDecision,
@@ -237,3 +238,36 @@ def test_subagent_input_roundtrip() -> None:
     assert restored == si
     assert restored.role == "world_modeler"
     assert restored.brain == "epidemiology"
+
+
+# T6 (Session 10) -- BrainLensedObservation round-trip
+def test_brain_lensed_observation_roundtrip() -> None:
+    obs = CrisisworldcortexObservation(
+        regions=[
+            RegionTelemetry(
+                region="R1", reported_cases_d_ago=5, hospital_load=0.3, compliance_proxy=0.85
+            ),
+        ],
+        resources=ResourceInventory(test_kits=100, hospital_beds_free=50),
+        active_restrictions=[Restriction(region="R1", severity="moderate", ticks_remaining=3)],
+        legal_constraints=[],
+        tick=3,
+        ticks_remaining=9,
+        cognition_budget_remaining=5200,
+        recent_action_log=[],
+    )
+    blo = BrainLensedObservation(
+        brain="epidemiology",
+        raw_obs=obs,
+        salient_field_ids=["regions[*].hospital_load", "regions[*].reported_cases_d_ago"],
+        derived_features={
+            "epi_pressure": 0.6,
+            "worst_region_infection": 0.005,
+            "transmission_rate_trend": 0.0,
+        },
+        last_reward=0.5,
+    )
+    restored = BrainLensedObservation.model_validate_json(blo.model_dump_json())
+    assert restored == blo
+    assert restored.brain == "epidemiology"
+    assert restored.raw_obs == obs
