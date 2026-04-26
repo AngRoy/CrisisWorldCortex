@@ -43,6 +43,7 @@ ENV/
 
 # Local agent and editor state
 .claude/
+.diag/
 .vscode/
 .idea/
 *.swp

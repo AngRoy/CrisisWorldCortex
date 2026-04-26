@@ -17,6 +17,7 @@
 .github/
 .pre-commit-config.yaml
 .claude/
+.diag/
 
 # Python bytecode and test artifacts
 __pycache__/
