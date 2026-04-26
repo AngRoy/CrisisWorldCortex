@@ -121,10 +121,26 @@ class CrisisworldcortexEnvironment(Environment):
             )
         self._state.step_count += 1
         self._world_state = apply_tick(self._world_state, action.action)
+        # Parse-failure terminal contract (design §19, Phase-1 restoration):
+        # the synthetic parse_failure_marker (PublicCommunication with
+        # honesty=0.0, magic-string discriminator per Phase-A M3-B) ends
+        # the episode as state.terminal = "failure". apply_tick may have
+        # set terminal to "none"/"success"/"timeout" via the SEIR rules;
+        # we override here because parse-failure is a harness-level fault,
+        # not a simulator-level event.
+        payload = action.action
+        if (
+            payload.kind == "public_communication"
+            and getattr(payload, "honesty", None) == 0.0
+            and self._world_state.recent_action_log
+            and not self._world_state.recent_action_log[-1].accepted
+        ):
+            self._world_state.terminal = "failure"
         obs = make_observation(self._world_state)
-        # Per design §15: r_outer is the only env-side reward signal, in [0,1].
-        # Terminal bonus (+/-0.20) is composed downstream by the trainer per
-        # design §14.3 — never bundled into obs.reward.
+        # Per design §15: r_outer is the only env-side reward signal, in
+        # [-1.0, 1.0] post-Phase-1 (was [0, 1]). Terminal bonus (+/-0.20)
+        # is composed downstream by the trainer per design §14.3 — never
+        # bundled into obs.reward.
         obs.reward = outer_reward(self._world_state, action.action)
         return obs
 

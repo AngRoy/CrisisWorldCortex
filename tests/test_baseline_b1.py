@@ -218,7 +218,13 @@ def test_b1_runs_episode_with_valid_json() -> None:
 def test_b1_parse_failure_submits_synthetic_rejection() -> None:
     """When the LLM emits unparseable text, B1 submits a synthetic
     PublicCommunication so the env rejects with accepted=False — landing
-    r_policy=0 in outer_reward, and the action log shows the rejection.
+    r_policy=-1.0 in outer_reward (Phase-1 fix per design §19) and the
+    action log shows the rejection.
+
+    Phase-1 contract: parse-failure now TERMINATES the episode at the
+    rejection tick (state.terminal = "failure" → obs.done = True). So
+    only the first parse-failure lands; the second LLM response in the
+    stub queue never gets dispatched.
     """
     env_inner = CrisisworldcortexEnvironment()
     env = _InProcessEnvAdapter(env_inner)
@@ -233,36 +239,26 @@ def test_b1_parse_failure_submits_synthetic_rejection() -> None:
 
     trajectory = agent.run_episode(task="outbreak_easy", seed=0, max_ticks=5)
 
-    # Both parse failures were detected and counted.
-    assert trajectory["parse_failure_count"] == 2
+    # Phase-1: parse-failure terminates → only the first marker lands.
+    assert trajectory["parse_failure_count"] == 1
 
-    # B1 did NOT crash on parse failure — at least 3 ticks ran, even
-    # though the env may then have hit a terminal (success-on-3-safe-ticks
-    # or otherwise). What's binding: parse failure does not raise.
-    assert trajectory["steps_taken"] >= 3, (
+    # B1 did NOT crash on parse failure — exactly 1 tick ran (parse-failure
+    # marker submitted, env terminated episode).
+    assert trajectory["steps_taken"] == 1, (
         f"steps_taken={trajectory['steps_taken']!r} - parse failure "
-        f"shouldn't kill the agent before tick 3"
+        f"should terminate at tick 1 under the §19 contract"
     )
 
-    # The first two action-log entries show V2 rejection (synthetic
-    # public_communication was submitted; env returned accepted=False).
+    # The action-log entry shows synthetic public_communication
+    # (parse-failure marker, honesty=0.0) — rejected by env.
     log = env_inner._world_state.recent_action_log
-    assert len(log) >= 2
+    assert len(log) == 1
     assert log[0].action.kind == "public_communication"
     assert log[0].accepted is False, "parse-failure synthetic must be rejected by env"
-    assert log[1].action.kind == "public_communication"
-    assert log[1].accepted is False
 
-    # The third entry should be the first parsed NoOp.
-    assert log[2].action.kind == "no_op"
-    assert log[2].accepted is True
-
-    # B1's local trajectory carries the raw snippets for forensic use.
+    # B1's local trajectory carries the raw snippet for forensic use.
     assert trajectory["action_history"][0]["parse_failure"] is True
     assert trajectory["action_history"][0]["raw_llm"] == "I cannot help with that."
-    assert trajectory["action_history"][1]["parse_failure"] is True
-    assert trajectory["action_history"][1]["raw_llm"] == "Sorry, no JSON."
-    assert trajectory["action_history"][2]["parse_failure"] is False
 
 
 def test_b1_caller_id_format_short_colon_separated() -> None:
@@ -335,7 +331,10 @@ def test_b1_step_event_carries_rich_context() -> None:
     from baselines.flat_agent import B1StepEvent
 
     env = _InProcessEnvAdapter(CrisisworldcortexEnvironment())
-    llm = _StubLLMClient(["I cannot help with that."] + ['{"kind": "no_op"}'] * 5)
+    # Use a clean-parse first response; parse-failure now terminates the
+    # episode at tick 1 under the §19 contract, so we exercise the
+    # tick-1 + tick-2 sequence with both responses being valid JSON.
+    llm = _StubLLMClient(['{"kind": "no_op"}'] * 5)
     agent = B1FlatAgent(env=env, llm=llm)
 
     events: list[B1StepEvent] = []
@@ -348,18 +347,17 @@ def test_b1_step_event_carries_rich_context() -> None:
 
     assert len(events) >= 2
 
-    # Tick 1: parse failure. Submitted action is the synthetic V2-rejected
-    # PublicCommunication marker; env returns accepted=False; reward in [0,1].
+    # Tick 1: clean parse. Submitted is NoOp. error must be None.
     e1 = events[0]
     assert e1.tick == 1
-    assert e1.parse_failure is True
-    assert e1.error == "parse_failure"
-    assert e1.raw_llm == "I cannot help with that."
-    assert e1.action.kind == "public_communication"
-    assert 0.0 <= e1.reward <= 1.0
+    assert e1.parse_failure is False
+    assert e1.error is None
+    assert e1.action.kind == "no_op"
+    assert e1.raw_llm == '{"kind": "no_op"}'
+    assert -1.0 <= e1.reward <= 1.0  # Phase-1 range relaxed from [0,1].
     assert isinstance(e1.done, bool)
 
-    # Tick 2: clean parse. Submitted is NoOp. error must be None.
+    # Tick 2: another clean parse. Submitted is NoOp. error must be None.
     e2 = events[1]
     assert e2.tick == 2
     assert e2.parse_failure is False

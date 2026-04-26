@@ -15,6 +15,11 @@ from CrisisWorldCortex.models import (
     RestrictMovement,
 )
 from CrisisWorldCortex.server.graders import outer_reward
+from CrisisWorldCortex.server.graders.outer_reward import (
+    R_POLICY_NOOP_ACCEPTED,
+    R_POLICY_REJECTED,
+    W_POLICY,
+)
 from CrisisWorldCortex.server.simulator import apply_tick, load_task
 
 
@@ -87,8 +92,12 @@ def test_reward_differs_for_accepted_vs_rejected_action() -> None:
 
     Compare two episodes from the same starting state: one issues NoOp
     (accepted), the other issues PublicCommunication (V2-rejected). The
-    SEIR step runs identically; only ``r_policy`` differs. With weight
-    0.12, the gap should be exactly 0.12 (modulo float rounding).
+    SEIR step runs identically; only ``r_policy`` differs. After the
+    Workstream-B Phase-1 four-state contract, NoOp(accepted) →
+    R_POLICY_NOOP_ACCEPTED (0.0) and PublicCommunication(honesty=0.9,
+    rejected as legal-violation) → R_POLICY_REJECTED (-0.5). The exact
+    gap is therefore ``(R_POLICY_NOOP_ACCEPTED - R_POLICY_REJECTED) *
+    W_POLICY`` (modulo float rounding).
     """
     s_a = load_task("outbreak_easy", episode_seed=42)
     s_b = load_task("outbreak_easy", episode_seed=42)
@@ -109,7 +118,7 @@ def test_reward_differs_for_accepted_vs_rejected_action() -> None:
     assert r_ok > r_bad, (
         f"accepted action should score higher than rejected: ok={r_ok!r} bad={r_bad!r}"
     )
-    # Exact gap = 0.12 because the only differing component is r_policy.
-    assert abs((r_ok - r_bad) - 0.12) < 1e-9, (
-        f"r_policy gap mismatch: ok-bad={r_ok - r_bad!r}, expected 0.12"
+    expected_gap = (R_POLICY_NOOP_ACCEPTED - R_POLICY_REJECTED) * W_POLICY
+    assert abs((r_ok - r_bad) - expected_gap) < 1e-9, (
+        f"r_policy gap mismatch: ok-bad={r_ok - r_bad!r}, expected {expected_gap!r}"
     )
