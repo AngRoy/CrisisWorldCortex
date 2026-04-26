@@ -25,6 +25,9 @@ dependencies = [
     # future uv sync from silently pulling 3.x. Bump explicitly when 3.0
     # ships and we've verified compatibility.
     "openai>=2.0,<3.0",
+    # Training / data-collection scripts push trajectory datasets to HF.
+    "datasets>=4.0.0",
+    "huggingface-hub>=1.0.0",
 ]
 
 [project.optional-dependencies]
