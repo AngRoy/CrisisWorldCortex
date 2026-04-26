@@ -18,6 +18,7 @@ from cortex.schemas import (
     PerceptionReport,
     RegionBeliefEstimate,
     RoutingAction,
+    SubagentInput,
 )
 from CrisisWorldCortex.models import (
     CrisisworldcortexAction,
@@ -210,3 +211,29 @@ def test_perception_and_critic_roundtrips() -> None:
         severity=0.6,
     )
     assert CriticReport.model_validate_json(cr.model_dump_json()) == cr
+
+
+# T7 (Session 9) -- SubagentInput round-trip
+def test_subagent_input_roundtrip() -> None:
+    si = SubagentInput(
+        brain="epidemiology",
+        role="world_modeler",
+        tick=3,
+        round=1,
+        perception=PerceptionReport(
+            brain="epidemiology",
+            salient_signals=["R1 cases rising"],
+            anomalies=[],
+            confidence=0.7,
+            evidence=[EvidenceCitation(source="telemetry", ref="R1.cases", excerpt="rising")],
+        ),
+        prior_belief=None,
+        prior_plans=[],
+        target_plan_id=None,
+        last_reward=0.5,
+        recent_action_log_excerpt=[],
+    )
+    restored = SubagentInput.model_validate_json(si.model_dump_json())
+    assert restored == si
+    assert restored.role == "world_modeler"
+    assert restored.brain == "epidemiology"

@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 # OWN internal types (cortex.subagents, cortex.brains, etc.) continue
 # to use bare-name sibling imports per Phase 1 C1 — only the cross-package
 # wire boundary is canonicalised.
-from CrisisWorldCortex.models import OuterActionPayload, RegionId
+from CrisisWorldCortex.models import ExecutedAction, OuterActionPayload, RegionId
 
 EpistemicPhase = Literal["Divergence", "Challenge", "Narrowing", "Convergence"]
 
@@ -135,6 +135,30 @@ class CriticReport(BaseModel):
 SubagentReport = Union[BeliefState, CandidatePlan, CriticReport]
 """Type alias for the 3 LLM-subagent outputs. Used by loggers and
 trajectory buffers that need to carry 'any subagent output' generically."""
+
+
+class SubagentInput(BaseModel):
+    """Typed input handed to one of the 3 LLM subagents per call.
+
+    Per Phase A §2 A2: each subagent call receives a fully-typed input
+    so prompts are deterministic and testable. ``prior_belief`` is
+    ``None`` on round 1 (nothing to revise yet); on round 2 it carries
+    the previous round's BeliefState (or an empty BeliefState if round 1
+    failed, per Phase A Decision 62). ``prior_plans`` is empty for
+    WorldModeler / Planner; populated for Critic so it can attack a
+    specific plan. ``target_plan_id`` is required when ``role='critic'``.
+    """
+
+    brain: Literal["epidemiology", "logistics", "governance"]
+    role: Literal["world_modeler", "planner", "critic"]
+    tick: int = Field(ge=0)
+    round: int = Field(ge=1, le=2, description="MVP cap: 1 or 2 only")
+    perception: PerceptionReport
+    prior_belief: Optional[BeliefState] = None
+    prior_plans: List[CandidatePlan] = Field(default_factory=list)
+    target_plan_id: Optional[str] = None
+    last_reward: float
+    recent_action_log_excerpt: List[ExecutedAction] = Field(default_factory=list)
 
 
 # ============================================================================
