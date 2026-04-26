@@ -49,6 +49,21 @@ def test_default_model_name_is_qwen3_7b() -> None:
     )
 
 
+def test_base_model_falls_back_to_model_name() -> None:
+    """Phase 5e M-FR-25: BASE_MODEL defaults to MODEL_NAME when not set.
+
+    Existing single-stage cold-start GRPO callers don't set BASE_MODEL,
+    so the fallback keeps their behavior unchanged. Two-stage SFT->GRPO
+    callers explicitly export BASE_MODEL to point at the warm-started
+    checkpoint.
+    """
+    mod = _load_module()
+    assert mod.BASE_MODEL == mod.MODEL_NAME, (
+        f"BASE_MODEL={mod.BASE_MODEL!r} should fall back to MODEL_NAME={mod.MODEL_NAME!r} "
+        f"when BASE_MODEL env var is unset"
+    )
+
+
 def test_required_env_vars_raise_systemexit_when_missing() -> None:
     """HF_TOKEN and HUB_REPO_ID are required and raise SystemExit.
 

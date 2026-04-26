@@ -9,6 +9,13 @@ Configuration is entirely env-var driven so the same script trains:
   - B1-Llama  (MODEL_NAME=meta-llama/Llama-3.1-8B-Instruct)
 without source edits.
 
+Two-stage SFT-then-GRPO pipeline (Phase 5e):
+    BASE_MODEL env var optionally overrides MODEL_NAME at the
+    FastLanguageModel.from_pretrained call. Set BASE_MODEL to a
+    Phase-5d SFT-warmstarted checkpoint (e.g. Angshuman28/qwen3-7b-sft-warmstart)
+    to start GRPO from a model that already knows the JSON action schema.
+    Defaults to MODEL_NAME so single-stage cold-start GRPO still works.
+
 Llama-3.1-8B is HF-gated — script pre-flight checks model accessibility
 and aborts with a clear error if the user has not accepted the license.
 Per Phase-A M-FR-3, no silent fallback (fail-loud preserves the
@@ -50,6 +57,13 @@ def _env(name: str, default: Optional[str] = None, *, required: bool = False) ->
 # ============================================================================
 
 MODEL_NAME = _env("MODEL_NAME", "unsloth/Qwen3-7B-Instruct-bnb-4bit")
+# BASE_MODEL: optional override pointing to an SFT-warmstarted checkpoint
+# (e.g. "Angshuman28/qwen3-7b-sft-warmstart"). Falls back to MODEL_NAME so
+# existing single-stage GRPO usage doesn't break. Per Phase-5e M-FR-25:
+# MODEL_NAME stays the canonical model-family identifier (Qwen vs Llama)
+# for telemetry/HF-Hub-commit purposes; BASE_MODEL is the actual checkpoint
+# loaded into FastLanguageModel. They diverge after SFT warm-start.
+BASE_MODEL = _env("BASE_MODEL", MODEL_NAME)
 HF_TOKEN = _env("HF_TOKEN", required=True)
 HUB_REPO_ID = _env("HUB_REPO_ID", required=True)
 ENV_URL = _env("ENV_URL", "https://angshuman28-crisisworldcortex.hf.space")
@@ -109,11 +123,12 @@ def preflight_model_access(model_name: str, token: str) -> None:
 
 def main() -> int:
     log(f"MODEL_NAME={MODEL_NAME}")
+    log(f"BASE_MODEL={BASE_MODEL}")
     log(f"HUB_REPO_ID={HUB_REPO_ID}")
     log(f"ENV_URL={ENV_URL}")
     log(f"MAX_TRAIN_STEPS={MAX_TRAIN_STEPS} GROUP_SIZE={GROUP_SIZE} LR={LR}")
 
-    preflight_model_access(MODEL_NAME, HF_TOKEN)
+    preflight_model_access(BASE_MODEL, HF_TOKEN)
 
     # Lazy imports — keeps preflight fast and avoids loading Unsloth/torch
     # on local machines that don't have GPU.
@@ -293,9 +308,9 @@ def main() -> int:
         )
 
     # ---- Load model + LoRA ----
-    log(f"loading model {MODEL_NAME} (LoRA rank={LORA_RANK})")
+    log(f"loading model {BASE_MODEL} (LoRA rank={LORA_RANK})")
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=MODEL_NAME,
+        model_name=BASE_MODEL,
         max_seq_length=MAX_PROMPT_LEN + MAX_COMPLETION_LEN,
         load_in_4bit=True,
         fast_inference=True,
