@@ -48,6 +48,7 @@ build/
 
 # Docs (not needed inside the container — frontmatter / setup notes
 # are for humans and CI, not the running env)
+docs/
 CLAUDE.md
 
 # Local walkthrough / demo scripts (mm.md already covered by *.md above)

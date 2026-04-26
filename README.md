@@ -1,6 +1,6 @@
 ---
 title: CrisisWorldCortex Environment Server
-emoji: 🌍
+emoji: 🧠
 colorFrom: yellow
 colorTo: pink
 sdk: docker
