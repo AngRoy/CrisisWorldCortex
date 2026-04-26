@@ -37,16 +37,20 @@ Score formula (Session 7a §7 + 7b §9.4 revision): see compute_score.
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from baselines.flat_agent import B1FlatAgent, B1StepEvent
 from cortex.llm_client import LLMClient
 from CrisisWorldCortex.models import OuterActionPayload
 from CrisisWorldCortex.server.graders import terminal_bonus
 from CrisisWorldCortex.server.simulator import WorldState
+
+AgentKind = Literal["b1", "b2", "b3"]
+_AGENT_CHOICES: tuple = ("b1", "b2", "b3")
 
 # ============================================================================
 # Constants
@@ -263,7 +267,7 @@ def _make_env_from_spaces(base_url: str) -> Any:
 
 
 # ============================================================================
-# Episode loop — delegates to B1FlatAgent.run_episode(step_callback=...)
+# Episode loop — delegates to the selected agent's run_episode(step_callback=...)
 # ============================================================================
 
 
@@ -305,6 +309,43 @@ class _SyncEnvAdapter:
         return obs
 
 
+def _make_agent(kind: str, env: Any, llm: Any) -> Any:
+    """Construct the B1/B2/B3 agent for ``kind``.
+
+    All three agents share the ``(env, llm)`` constructor signature and
+    expose ``run_episode(task, seed, max_ticks, *, step_callback)`` per
+    Phase A Decision 54. Lazy imports for B2/B3 keep the cold-start cost
+    of the default B1 path unchanged.
+    """
+    if kind == "b1":
+        return B1FlatAgent(env=env, llm=llm)
+    if kind == "b2":
+        from baselines.flat_agent_matched_compute import B2MatchedComputeAgent
+
+        return B2MatchedComputeAgent(env=env, llm=llm)
+    if kind == "b3":
+        from baselines.cortex_fixed_router import B3CortexFixedRouter
+
+        return B3CortexFixedRouter(env=env, llm=llm)
+    raise ValueError(f"unknown agent kind: {kind!r}; expected one of {_AGENT_CHOICES}")
+
+
+def _build_argparser() -> argparse.ArgumentParser:
+    """Argparse for inference.py CLI flags. Default --agent=b1 keeps the
+    pre-Session-13 invocation working for the existing eval suite."""
+    parser = argparse.ArgumentParser(
+        prog="inference",
+        description="CrisisWorldCortex inference harness (B1/B2/B3 dispatch).",
+    )
+    parser.add_argument(
+        "--agent",
+        choices=_AGENT_CHOICES,
+        default="b1",
+        help="Agent to run: b1 (flat), b2 (matched-compute), b3 (cortex+deterministic-router).",
+    )
+    return parser
+
+
 def _run_episode(
     env: Any,
     llm: LLMClient,
@@ -312,8 +353,9 @@ def _run_episode(
     seed: int,
     model_name: str,
     max_ticks: int,
+    agent_kind: str = "b1",
 ) -> dict:
-    """Stream one episode end-to-end via ``B1FlatAgent.run_episode``.
+    """Stream one episode end-to-end via ``<Agent>.run_episode``.
 
     The agent owns the per-tick LLM-call + parse + env.step loop; this
     harness owns the [START] / [STEP] / [END] stdout protocol via a
@@ -346,7 +388,7 @@ def _run_episode(
         env,
         reset_kwargs={"task_name": task_name, "seed": seed, "max_ticks": max_ticks},
     )
-    agent = B1FlatAgent(env=adapter, llm=llm)
+    agent = _make_agent(agent_kind, adapter, llm)
 
     try:
         traj = agent.run_episode(
@@ -402,6 +444,7 @@ def _run_episode(
 
 def main() -> None:
     """Entry point for ``uv run python inference.py`` and the validator."""
+    args = _build_argparser().parse_args()
     api_base_url = os.getenv("API_BASE_URL", DEFAULT_API_BASE_URL)
     model_name = os.getenv("MODEL_NAME", DEFAULT_MODEL)
     hf_token = os.getenv("HF_TOKEN")
@@ -446,6 +489,7 @@ def main() -> None:
                 seed=cfg["seed"],
                 model_name=model_name,
                 max_ticks=cfg["max_ticks"],
+                agent_kind=args.agent,
             )
             results.append(result)
         finally:
