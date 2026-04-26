@@ -223,6 +223,12 @@ def format_episode_trace(
 _DOCKER_READY_TIMEOUT_S = 120.0
 
 
+def _sync_if_available(env: Any) -> Any:
+    """OpenEnv 0.2.2+ exposes .sync(); 0.2.1 reset/step are already sync."""
+    sync = getattr(env, "sync", None)
+    return sync() if callable(sync) else env
+
+
 def _make_env_from_docker(image_name: str) -> Any:
     """Spin up Docker container, return a sync wrapper.
 
@@ -233,13 +239,9 @@ def _make_env_from_docker(image_name: str) -> Any:
     at 30s; first-start commonly takes 45–90s here). 120s gives ample
     headroom without papering over a real hang.
 
-    The ``SyncEnvClient`` returned by ``.sync()`` owns a persistent
-    background event loop and routes ``connect()`` / ``reset()`` /
-    ``step()`` through it. We MUST call ``connect()`` on the sync
-    wrapper (not on the async client via ``asyncio.run``), or the
-    one-shot loop ``asyncio.run`` creates closes immediately and
-    leaves the connection tied to a dead loop — subsequent ``reset()``
-    on the persistent loop then raises ``Event loop is closed``.
+    OpenEnv 0.2.2+ returns an async client with a ``.sync()`` adapter.
+    OpenEnv 0.2.1 exposes synchronous ``reset()`` / ``step()`` directly.
+    We still call ``connect()`` because both API shapes expose it.
     """
     from openenv.core.containers.runtime.providers import LocalDockerProvider
 
@@ -249,7 +251,7 @@ def _make_env_from_docker(image_name: str) -> Any:
     base_url = provider.start_container(image_name)
     provider.wait_for_ready(base_url, timeout_s=_DOCKER_READY_TIMEOUT_S)
     async_client = CrisisworldcortexEnv(base_url=base_url, provider=provider)
-    sync_env = async_client.sync()
+    sync_env = _sync_if_available(async_client)
     sync_env.connect()
     return sync_env
 
@@ -258,12 +260,11 @@ def _make_env_from_spaces(base_url: str) -> Any:
     """Connect to an already-running env at ``base_url`` (HF Spaces or
     any reachable OpenEnv server). Returns a sync wrapper.
 
-    The constructor is sync (just stores ``base_url``); only ``.reset()``
-    / ``.step()`` need event-loop machinery, which ``.sync()`` provides.
+    OpenEnv version differences are handled by ``_sync_if_available``.
     """
     from CrisisWorldCortex import CrisisworldcortexEnv
 
-    return CrisisworldcortexEnv(base_url=base_url).sync()
+    return _sync_if_available(CrisisworldcortexEnv(base_url=base_url))
 
 
 # ============================================================================

@@ -222,6 +222,12 @@ def preflight_env_health(env_url: str) -> None:
     log("preflight: env healthy")
 
 
+def _sync_if_available(env: Any) -> Any:
+    """OpenEnv 0.2.2+ exposes .sync(); 0.2.1 reset/step are already sync."""
+    sync = getattr(env, "sync", None)
+    return sync() if callable(sync) else env
+
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -273,7 +279,7 @@ def collect() -> int:
 
     for task in tasks:
         for ep in range(NUM_EPISODES):
-            env = CrisisworldcortexEnv(base_url=ENV_URL).sync()
+            env = _sync_if_available(CrisisworldcortexEnv(base_url=ENV_URL))
             try:
                 reset_result = env.reset(task_name=task, seed=ep, max_ticks=EPISODE_TICKS)
                 obs = (

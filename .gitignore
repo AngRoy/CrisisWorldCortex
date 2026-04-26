@@ -52,6 +52,7 @@ ENV/
 # Local walkthrough / demo scripts (kept local; not shipped to HF Space)
 mm.py
 mm.md
+INVESTIGATION_REPORT.md
 
 # OS metadata
 .DS_Store

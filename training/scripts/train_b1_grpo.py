@@ -86,6 +86,12 @@ def log(*args: object) -> None:
     print("[b1-grpo]", *args, flush=True)
 
 
+def _sync_if_available(env: Any) -> Any:
+    """OpenEnv 0.2.2+ exposes .sync(); 0.2.1 reset/step are already sync."""
+    sync = getattr(env, "sync", None)
+    return sync() if callable(sync) else env
+
+
 # ============================================================================
 # Pre-flight: gated-model check (Llama-3.1-8B requires HF acceptance)
 # ============================================================================
@@ -340,7 +346,7 @@ def main() -> int:
     log(f"tasks={tasks}")
 
     def make_env() -> Any:
-        return CrisisworldcortexEnv(base_url=ENV_URL).sync()
+        return _sync_if_available(CrisisworldcortexEnv(base_url=ENV_URL))
 
     SYSTEM_PROMPT = build_system_prompt()
 

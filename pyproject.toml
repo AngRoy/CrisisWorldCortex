@@ -17,7 +17,15 @@ dependencies = [
     # Core OpenEnv runtime (provides FastAPI server + HTTP client types)
     # install from github
     # "openenv-core[core] @ git+https://github.com/meta-pytorch/OpenEnv.git",
-    "openenv-core[core]==0.2.3",
+    # 0.2.2+ requires fastmcp>=3.0.0, which requires pydantic>=2.11.7.
+    # That is incompatible with all published mergekit versions, and TRL's
+    # GRPOTrainer import path currently imports mergekit. 0.2.1 is the newest
+    # OpenEnv release that still resolves with mergekit for HF Jobs training.
+    "openenv-core[core]==0.2.1",
+    # Keep the base lock compatible with mergekit as well. Without these caps,
+    # uv can still choose fastmcp 3.x / pydantic 2.11+ when mergekit is absent.
+    "fastmcp<3.0.0",
+    "pydantic>=2.10.6,<2.11",
     # OpenAI SDK — used by cortex/llm_client.py against the HF Router
     # (router.huggingface.co/v1 is OpenAI-compatible). Pinned to 2.x major:
     # 2.0 introduced API changes from 1.x, real HF Router calls haven't

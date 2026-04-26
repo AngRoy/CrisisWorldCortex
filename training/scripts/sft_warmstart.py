@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import os
 import sys
+import textwrap
 import time
 from typing import Optional
 
@@ -69,6 +70,27 @@ DRY_RUN = _env("DRY_RUN", "0") not in ("0", "", "false", "False")
 
 def log(*args: object) -> None:
     print("[sft-warmstart]", *args, flush=True)
+
+
+_SYSTEM_PROMPT_BODY = textwrap.dedent(
+    """
+    You are an agent operating one outbreak-control simulator. You receive
+    an observation each tick and must respond with EXACTLY ONE JSON object -
+    no markdown fences, no prose around it, just the JSON.
+
+    == ACTION TYPES (kind + required fields) ==
+
+    1. {"kind": "no_op"}
+    2. {"kind": "deploy_resource", "region": "<id>", "resource_type": "<type>", "quantity": <int>}
+    3. {"kind": "request_data", "region": "<id>", "data_type": "case_survey" | "hospital_audit" | "compliance_check"}
+    4. {"kind": "restrict_movement", "region": "<id>", "severity": "none" | "light" | "moderate" | "strict"}
+    5. {"kind": "escalate", "to_authority": "regional" | "national"}
+    6. {"kind": "reallocate_budget", "from_resource": "<type>", "to_resource": "<type>", "amount": <int>}
+
+    Respond with ONLY the JSON action object. No explanation, no surrounding
+    text, no markdown.
+    """
+).strip()
 
 
 # ============================================================================
@@ -186,10 +208,18 @@ def main() -> int:
     eos = tokenizer.eos_token or "<|endoftext|>"
 
     def formatting_func(example: dict) -> str:
-        # The prompt column already contains the chat-template-rendered system
-        # + user turns with an open assistant generation prompt. Append the
-        # completion + EOS so SFT learns the assistant-side JSON action.
-        return f"{example['prompt']}{example['completion']}{eos}"
+        # Phase 5c stores the raw serialized observation in "prompt".
+        # Render it through the target tokenizer here so SFT matches the
+        # prompt shape used by train_b1_grpo.py.
+        rendered_prompt = tokenizer.apply_chat_template(
+            [
+                {"role": "system", "content": _SYSTEM_PROMPT_BODY},
+                {"role": "user", "content": example["prompt"]},
+            ],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        return f"{rendered_prompt}{example['completion']}{eos}"
 
     # ---- Compute effective epoch budget ----
     effective_batch = PER_DEVICE_BATCH * GRAD_ACCUM

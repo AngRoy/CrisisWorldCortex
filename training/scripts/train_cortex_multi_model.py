@@ -86,6 +86,7 @@ TASKS_CSV = _env("TASKS_CSV", "outbreak_easy,outbreak_medium,outbreak_hard")
 EPISODE_TICKS = int(_env("EPISODE_TICKS", "12"))
 SEED = int(_env("SEED", "42"))
 DRY_RUN = _env("DRY_RUN", "0") not in ("0", "", "false", "False")
+ALLOW_CORTEX_SKELETON = _env("ALLOW_CORTEX_SKELETON", "0") not in ("0", "", "false", "False")
 
 # Memory budget hard floor: abort if less than this many GB free at script
 # start. Conservative — the steady-state is ~43 GB used; this leaves a 30-GB
@@ -95,6 +96,12 @@ MIN_FREE_GPU_GB = float(_env("MIN_FREE_GPU_GB", "30"))
 
 def log(*args: object) -> None:
     print("[cortex-multi-model]", *args, flush=True)
+
+
+def _sync_if_available(env: Any) -> Any:
+    """OpenEnv 0.2.2+ exposes .sync(); 0.2.1 reset/step are already sync."""
+    sync = getattr(env, "sync", None)
+    return sync() if callable(sync) else env
 
 
 # ============================================================================
@@ -311,6 +318,15 @@ def main() -> int:
         log("DRY_RUN=1 — preflight only; not loading models or training")
         return 0
 
+    if not ALLOW_CORTEX_SKELETON:
+        raise SystemExit(
+            "[FATAL] train_cortex_multi_model.py is still a Phase-6 skeleton: "
+            "its dataset is a placeholder and its GRPO reward path does not "
+            "condition reward on the sampled router completion. Refusing to "
+            "push an untrained adapter. Set ALLOW_CORTEX_SKELETON=1 only for "
+            "manual construction debugging, not for submission training."
+        )
+
     check_memory_budget()
 
     # Lazy imports — keeps DRY_RUN fast and avoids loading torch/Unsloth on
@@ -399,7 +415,7 @@ def main() -> int:
     log(f"tasks={tasks}")
 
     def make_env() -> Any:
-        return CrisisworldcortexEnv(base_url=ENV_URL).sync()
+        return _sync_if_available(CrisisworldcortexEnv(base_url=ENV_URL))
 
     train_dataset = Dataset.from_dict(
         {
