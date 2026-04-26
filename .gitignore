@@ -48,6 +48,10 @@ ENV/
 *.swp
 *.swo
 
+# Local walkthrough / demo scripts (kept local; not shipped to HF Space)
+mm.py
+mm.md
+
 # OS metadata
 .DS_Store
 Thumbs.db
