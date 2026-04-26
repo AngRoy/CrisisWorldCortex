@@ -29,11 +29,16 @@ Usage:
 """
 
 try:
-    from openenv.core.env_server.http_server import create_app
+    from openenv.core.env_server import create_web_interface_app as create_app
 except Exception as e:  # pragma: no cover
     raise ImportError(
         "openenv is required for the web interface. Install dependencies with '\n    uv sync\n'"
     ) from e
+
+from pathlib import Path
+
+from fastapi.responses import FileResponse
+from starlette.staticfiles import StaticFiles
 
 # Wire types use canonical ``CrisisWorldCortex.models`` (Session 7d):
 # the container's wheel install resolves this to one ``sys.modules`` entry,
@@ -55,6 +60,18 @@ app = create_app(
     env_name="CrisisWorldCortex",
     max_concurrent_envs=1,  # increase this number to allow more concurrent WebSocket sessions
 )
+
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+
+if FRONTEND_DIR.exists():
+    app.mount("/cortex/css", StaticFiles(directory=str(FRONTEND_DIR / "css")), name="cortex-css")
+    app.mount("/cortex/js", StaticFiles(directory=str(FRONTEND_DIR / "js")), name="cortex-js")
+
+    @app.get("/cortex", include_in_schema=False)
+    @app.get("/cortex/", include_in_schema=False)
+    async def serve_cortex_frontend() -> FileResponse:
+        """Serve the additive Cortex dashboard without replacing /web."""
+        return FileResponse(str(FRONTEND_DIR / "index.html"))
 
 
 def main() -> None:
