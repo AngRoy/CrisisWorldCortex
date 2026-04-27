@@ -291,7 +291,7 @@ def _apply_reallocate_budget(state: WorldState, a: ReallocateBudget, rng: random
     if available < a.amount:
         return False
     setattr(state.resources, from_attr, available - a.amount)
-    transferred = int(a.amount * REALLOCATION_EFFICIENCY)
+    transferred = round(a.amount * REALLOCATION_EFFICIENCY)
     setattr(state.resources, to_attr, getattr(state.resources, to_attr) + transferred)
     return True
 
@@ -325,7 +325,9 @@ def _apply_pending_effects(state: WorldState) -> None:
     for region in state.regions:
         for effect in region.pending_effects:
             if effect.kind == "test_kits":
-                region.I = max(0.0, region.I - effect.magnitude)
+                shift = min(region.I, effect.magnitude)
+                region.I -= shift
+                region.R = min(1.0, region.R + shift)
             elif effect.kind == "vaccine_doses":
                 shift = min(region.S, effect.magnitude)
                 region.S -= shift

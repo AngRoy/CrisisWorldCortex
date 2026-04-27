@@ -165,6 +165,15 @@ class Council:
                 return CrisisworldcortexAction(action=NoOp())
 
             if action.kind == "switch_phase":
+                if action.new_phase == "Convergence":
+                    # Convergence terminates the loop (H4 fix).
+                    if ts.phase_trace[-1] != "Convergence":
+                        ts.phase_trace.append("Convergence")
+                    ts.phase = "Convergence"
+                    self.last_tick_state = ts
+                    return CrisisworldcortexAction(
+                        action=self._council_top(brain_recs)
+                    )
                 self._handle_switch_phase(
                     action,
                     ts,

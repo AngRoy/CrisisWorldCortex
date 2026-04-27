@@ -46,8 +46,11 @@ from typing import Any, Dict, List, Literal, Optional
 from baselines.flat_agent import B1FlatAgent, B1StepEvent
 from cortex.llm_client import LLMClient
 from CrisisWorldCortex.models import OuterActionPayload
-from CrisisWorldCortex.server.graders import terminal_bonus
-from CrisisWorldCortex.server.simulator import WorldState
+
+# Terminal bonus constants (inlined from server/graders to avoid import-graph
+# violation — inference.py must not import server.simulator or server.graders).
+_TERMINAL_BONUS_SUCCESS = 0.20
+_TERMINAL_BONUS_FAILURE = -0.20
 
 AgentKind = Literal["b1", "b2", "b3", "b6"]
 _AGENT_CHOICES: tuple = ("b1", "b2", "b3", "b6")
@@ -150,15 +153,9 @@ def action_to_str(payload: OuterActionPayload) -> str:
 def compute_score(rewards: List[float], terminal_bonus_value: float) -> float:
     """Compute episode score per design §14.3.
 
-    Linear rescale of natural [-0.20, 1.20] range to [0, 1] before clamping.
-    Diverges from triagesieve_env's ``rewards[-1]`` formula because triagesieve
-    uses a terminal-only reward while ours accumulates per-tick r_outer per
-    design §15.
-
-    HACKATHON VALIDATOR COMPATIBILITY: if the validator's distribution-fit
-    pipeline expects ``rewards[-1]``-shaped scores, this divergence may
-    surface as anomalous score distributions. Revisit if validator complains;
-    fallback is ``clamp(rewards[-1] if rewards else 1e-3, 1e-3, 1-1e-3)``.
+    Linear rescale of natural [-1.20, 1.20] range to [0, 1] before clamping.
+    The natural range arises from outer_reward in [-1.0, 1.0] (post-Phase-1)
+    plus terminal_bonus in [-0.20, +0.20].
 
     Empty-rewards case returns the lower clamp (1e-3) — a coarse failure
     signal. Session 14 (eval) will refine "env-failed-to-reset" vs
@@ -167,7 +164,7 @@ def compute_score(rewards: List[float], terminal_bonus_value: float) -> float:
     if not rewards:
         return SCORE_LOWER_CLAMP
     raw = sum(rewards) / len(rewards) + terminal_bonus_value
-    rescaled = (raw + 0.20) / 1.40
+    rescaled = (raw + 1.20) / 2.40
     return min(max(rescaled, SCORE_LOWER_CLAMP), SCORE_UPPER_CLAMP)
 
 
@@ -180,7 +177,7 @@ def format_episode_trace(
     task_name: str,
     model_name: str,
     steps: List[StepRecord],
-    final_state: WorldState,
+    final_state: Any,
 ) -> str:
     """Render the full ``[START] / [STEP]xN / [END]`` block as a string.
 
@@ -189,13 +186,17 @@ def format_episode_trace(
     helpers directly so per-tick output flushes in real time. Both paths
     share ``_format_*_line`` so the string format can't drift.
 
-    Reads ``terminal_bonus(final_state)`` to incorporate the design-§14.3
-    bonus into the score. Production cannot read latent state and passes
-    0.0 instead; this is the test-only path that has access to a real
-    WorldState (constructed via ``load_task`` in tests).
+    Computes ``terminal_bonus`` from ``final_state.terminal`` inline
+    (constants inlined from server/graders to avoid import-graph violation).
     """
     rewards = [s.reward for s in steps]
-    bonus = terminal_bonus(final_state)
+    terminal = getattr(final_state, "terminal", "none")
+    if terminal == "success":
+        bonus = _TERMINAL_BONUS_SUCCESS
+    elif terminal == "failure":
+        bonus = _TERMINAL_BONUS_FAILURE
+    else:
+        bonus = 0.0
     score = compute_score(rewards, terminal_bonus_value=bonus)
     success = score >= SUCCESS_THRESHOLD
 
@@ -305,8 +306,8 @@ class _SyncEnvAdapter:
         if wrapper_reward is not None:
             obs.reward = float(wrapper_reward)
         wrapper_done = getattr(result, "done", None)
-        if wrapper_done:
-            obs.done = True
+        if wrapper_done is not None:
+            obs.done = bool(wrapper_done)
         return obs
 
 
