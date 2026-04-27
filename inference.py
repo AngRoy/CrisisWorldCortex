@@ -49,8 +49,8 @@ from CrisisWorldCortex.models import OuterActionPayload
 from CrisisWorldCortex.server.graders import terminal_bonus
 from CrisisWorldCortex.server.simulator import WorldState
 
-AgentKind = Literal["b1", "b2", "b3"]
-_AGENT_CHOICES: tuple = ("b1", "b2", "b3")
+AgentKind = Literal["b1", "b2", "b3", "b6"]
+_AGENT_CHOICES: tuple = ("b1", "b2", "b3", "b6")
 
 # ============================================================================
 # Constants
@@ -310,13 +310,14 @@ class _SyncEnvAdapter:
         return obs
 
 
-def _make_agent(kind: str, env: Any, llm: Any) -> Any:
-    """Construct the B1/B2/B3 agent for ``kind``.
+def _make_agent(kind: str, env: Any, llm: Any, *, cortex_router: Optional[str] = None) -> Any:
+    """Construct the B1/B2/B3/B6 agent for ``kind``.
 
-    All three agents share the ``(env, llm)`` constructor signature and
+    All agents share the ``(env, llm)`` constructor shape and
     expose ``run_episode(task, seed, max_ticks, *, step_callback)`` per
     Phase A Decision 54. Lazy imports for B2/B3 keep the cold-start cost
-    of the default B1 path unchanged.
+    of the default B1 path unchanged; B6 additionally receives the trained
+    router LoRA repo id.
     """
     if kind == "b1":
         return B1FlatAgent(env=env, llm=llm)
@@ -328,6 +329,12 @@ def _make_agent(kind: str, env: Any, llm: Any) -> Any:
         from baselines.cortex_fixed_router import B3CortexFixedRouter
 
         return B3CortexFixedRouter(env=env, llm=llm)
+    if kind == "b6":
+        if not cortex_router:
+            raise ValueError("--cortex-router is required when --agent b6")
+        from baselines.cortex_trained_router import B6CortexTrainedRouter
+
+        return B6CortexTrainedRouter(env=env, llm=llm, router_repo=cortex_router)
     raise ValueError(f"unknown agent kind: {kind!r}; expected one of {_AGENT_CHOICES}")
 
 
@@ -336,13 +343,21 @@ def _build_argparser() -> argparse.ArgumentParser:
     pre-Session-13 invocation working for the existing eval suite."""
     parser = argparse.ArgumentParser(
         prog="inference",
-        description="CrisisWorldCortex inference harness (B1/B2/B3 dispatch).",
+        description="CrisisWorldCortex inference harness (B1/B2/B3/B6 dispatch).",
     )
     parser.add_argument(
         "--agent",
         choices=_AGENT_CHOICES,
         default="b1",
-        help="Agent to run: b1 (flat), b2 (matched-compute), b3 (cortex+deterministic-router).",
+        help=(
+            "Agent to run: b1 (flat), b2 (matched-compute), "
+            "b3 (cortex+deterministic-router), b6 (cortex+trained-router)."
+        ),
+    )
+    parser.add_argument(
+        "--cortex-router",
+        default=None,
+        help="HF model repo containing the trained B6 Cortex router LoRA adapter.",
     )
     return parser
 
@@ -355,6 +370,7 @@ def _run_episode(
     model_name: str,
     max_ticks: int,
     agent_kind: str = "b1",
+    cortex_router: Optional[str] = None,
 ) -> dict:
     """Stream one episode end-to-end via ``<Agent>.run_episode``.
 
@@ -389,7 +405,7 @@ def _run_episode(
         env,
         reset_kwargs={"task_name": task_name, "seed": seed, "max_ticks": max_ticks},
     )
-    agent = _make_agent(agent_kind, adapter, llm)
+    agent = _make_agent(agent_kind, adapter, llm, cortex_router=cortex_router)
 
     try:
         traj = agent.run_episode(
@@ -491,6 +507,7 @@ def main() -> None:
                 model_name=model_name,
                 max_ticks=cfg["max_ticks"],
                 agent_kind=args.agent,
+                cortex_router=args.cortex_router,
             )
             results.append(result)
         finally:
