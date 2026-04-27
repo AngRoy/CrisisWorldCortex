@@ -61,6 +61,8 @@ class _LLMClientLike(Protocol):
         temperature: Optional[float] = ...,
     ) -> ChatResponse: ...
 
+    def tokens_used_for(self, caller_id: str) -> int: ...
+
 
 # ============================================================================
 # Abstract base

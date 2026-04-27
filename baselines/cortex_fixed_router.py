@@ -135,11 +135,24 @@ class B3CortexFixedRouter:
             if step_callback is not None:
                 step_callback(event)
 
-            action_history.append({"tick": tick, "kind": wire_action.action.kind, "accepted": True})
+            accepted = bool(
+                obs.recent_action_log and obs.recent_action_log[-1].accepted
+            )
+            action_history.append({"tick": tick, "kind": wire_action.action.kind, "accepted": accepted})
 
             if obs.done:
                 break
             last_reward = current_reward
+
+        # Compute total tokens across all caller IDs for this episode.
+        tokens_total = 0
+        if hasattr(self._llm, "tokens_used_for"):
+            for bid in ("epidemiology", "logistics", "governance"):
+                for round_idx in (1, 2):
+                    for step_idx in range(10):
+                        for prefix in (self.CALLER_ID_PREFIX, "cortex"):
+                            cid = f"{prefix}:{bid}:t{tick}:r{round_idx}:s{step_idx}"
+                            tokens_total += self._llm.tokens_used_for(cid)
 
         return {
             "task": task,
@@ -148,4 +161,5 @@ class B3CortexFixedRouter:
             "action_history": action_history,
             "steps_taken": steps_taken,
             "parse_failure_count": parse_failure_count,
+            "tokens_total": tokens_total,
         }

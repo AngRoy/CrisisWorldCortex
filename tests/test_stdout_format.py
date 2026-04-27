@@ -158,19 +158,21 @@ def test_format_end_line_empty_rewards_emits_empty_string() -> None:
 
 
 def test_compute_score_basic_case() -> None:
-    """mean=0.5, bonus=0.0 -> (0.5 + 0.0 + 0.20)/1.40 = 0.5."""
-    assert compute_score([0.5] * 10, terminal_bonus_value=0.0) == pytest.approx(0.5)
+    """mean=0.5, bonus=0.0 -> (0.5 + 1.20)/2.40 = 0.7083..."""
+    assert compute_score([0.5] * 10, terminal_bonus_value=0.0) == pytest.approx(
+        (0.5 + 1.20) / 2.40
+    )
 
 
 def test_compute_score_natural_max_maps_to_open_one() -> None:
-    """mean=1.0, bonus=+0.20 -> (1.0 + 0.20 + 0.20)/1.40 = 1.0 -> clamped to 1-1e-3."""
+    """mean=1.0, bonus=+0.20 -> (1.20 + 1.20)/2.40 = 1.0 -> clamped to 1-1e-3."""
     score = compute_score([1.0] * 5, terminal_bonus_value=0.20)
     assert score == 1.0 - 1e-3
 
 
 def test_compute_score_natural_min_maps_to_open_zero() -> None:
-    """mean=0.0, bonus=-0.20 -> (0.0 - 0.20 + 0.20)/1.40 = 0.0 -> clamped to 1e-3."""
-    score = compute_score([0.0] * 5, terminal_bonus_value=-0.20)
+    """mean=-1.0, bonus=-0.20 -> (-1.20 + 1.20)/2.40 = 0.0 -> clamped to 1e-3."""
+    score = compute_score([-1.0] * 5, terminal_bonus_value=-0.20)
     assert score == 1e-3
 
 
