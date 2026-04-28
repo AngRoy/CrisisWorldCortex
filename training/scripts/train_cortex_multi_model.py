@@ -182,7 +182,24 @@ def make_env() -> Any:
 
 
 def normalize_step_result(result: Any) -> Any:
-    return result.observation if hasattr(result, "observation") else result
+    """Project StepResult wrapper fields onto the bare observation.
+
+    The HTTP/WebSocket client returns ``StepResult{observation, reward, done}``;
+    the deployed Space's parsed observation arrives with ``reward=None``, so
+    naively returning ``result.observation`` makes ``score_candidate``'s
+    ``0.0`` fallback fire for every candidate, advantages collapse to zero,
+    and the router updates against zero gradient. Mirrors
+    ``inference.py:_SyncEnvAdapter._normalize`` (the H15 fix on main):
+    project wrapper ``reward``/``done`` onto the obs before returning.
+    """
+    obs = result.observation if hasattr(result, "observation") else result
+    wrapper_reward = getattr(result, "reward", None)
+    if wrapper_reward is not None:
+        obs.reward = float(wrapper_reward)
+    wrapper_done = getattr(result, "done", None)
+    if wrapper_done is not None:
+        obs.done = bool(wrapper_done)
+    return obs
 
 
 def _action_summary(action: Any) -> str:
