@@ -493,7 +493,7 @@ def replay_prefix(env: Any, task: str, seed: int, prefix_actions: List[Any]) -> 
 
 def score_candidate(
     *,
-    candidate_env: Any,
+    env: Any,
     task: str,
     seed: int,
     prefix_actions: List[Any],
@@ -501,7 +501,17 @@ def score_candidate(
     completion: str,
     brains: Dict[str, FrozenBrain],
 ) -> CandidateResult:
-    """Score one router sample by replaying the prefix on a shared env client."""
+    """Score one router sample by resetting ``env``, replaying the prefix, then stepping the candidate.
+
+    ``env`` is the same per-training-step client the caller will reuse
+    for every candidate AND for committing the best action. We never hold
+    a second ``EnvClient`` open in parallel: the deployed Space's
+    WebSocket gateway drops one session of any same-caller pair, which
+    surfaces as ``ConnectionClosedOK`` (close-code 1000) mid-call. See
+    CORTEX_FIX_DIAGNOSIS.md. Cost is ``(GROUP_SIZE + 1)`` resets per tick
+    rather than 1; this matches the one-client-at-a-time lifecycle in
+    ``minimal_proof.py`` and ``collect_b3_corpus.py``.
+    """
     from CrisisWorldCortex.models import CrisisworldcortexAction
 
     brain = parse_router_choice(completion)
@@ -511,8 +521,8 @@ def score_candidate(
     if action_payload is None:
         return CandidateResult(0.0, brain, None, completion, False)
     try:
-        replay_prefix(candidate_env, task, seed, prefix_actions)
-        result = candidate_env.step(CrisisworldcortexAction(action=action_payload))
+        replay_prefix(env, task, seed, prefix_actions)
+        result = env.step(CrisisworldcortexAction(action=action_payload))
         obs = normalize_step_result(result)
         reward = obs.reward if obs.reward is not None else 0.0
         accepted = bool(obs.recent_action_log and obs.recent_action_log[-1].accepted)
@@ -538,7 +548,7 @@ def train_step(
     prefix_actions: List[Any],
     observation_text: str,
     brains: Dict[str, FrozenBrain],
-    candidate_env: Any,
+    env: Any,
 ) -> tuple[float, List[CandidateResult]]:
     import torch
 
@@ -547,7 +557,7 @@ def train_step(
     )
     results = [
         score_candidate(
-            candidate_env=candidate_env,
+            env=env,
             task=task,
             seed=seed,
             prefix_actions=prefix_actions,
@@ -614,71 +624,76 @@ def main() -> int:
     update_step = 0
     recent_rewards: List[float] = []
     recent_parse_ok: List[float] = []
-    candidate_env = make_env()
-    try:
-        while update_step < MAX_TRAIN_STEPS:
-            task = rng.choice(tasks)
-            seed = rng.randint(0, 10_000_000)
-            env = make_env()
-            prefix_actions: List[Any] = []
-            try:
-                obs = normalize_step_result(
-                    env.reset(task_name=task, seed=seed, max_ticks=EPISODE_TICKS)
+    while update_step < MAX_TRAIN_STEPS:
+        task = rng.choice(tasks)
+        seed = rng.randint(0, 10_000_000)
+        # One env client per training step. Reused for candidate scoring
+        # (reset + replay + step) and for committing the best action
+        # (reset + replay + step). Never two concurrent EnvClient sessions
+        # — see CORTEX_FIX_DIAGNOSIS.md.
+        env = make_env()
+        prefix_actions: List[Any] = []
+        try:
+            obs = normalize_step_result(
+                env.reset(task_name=task, seed=seed, max_ticks=EPISODE_TICKS)
+            )
+            last_reward = 0.0
+            for _tick in range(EPISODE_TICKS):
+                observation_text = serialize_observation(obs, last_reward)
+                loss, results = train_step(
+                    router_model=router_model,
+                    router_tokenizer=router_tokenizer,
+                    optimizer=optimizer,
+                    task=task,
+                    seed=seed,
+                    prefix_actions=prefix_actions,
+                    observation_text=observation_text,
+                    brains=brains,
+                    env=env,
                 )
-                last_reward = 0.0
-                for _tick in range(EPISODE_TICKS):
-                    observation_text = serialize_observation(obs, last_reward)
-                    loss, results = train_step(
-                        router_model=router_model,
-                        router_tokenizer=router_tokenizer,
-                        optimizer=optimizer,
-                        task=task,
-                        seed=seed,
-                        prefix_actions=prefix_actions,
-                        observation_text=observation_text,
-                        brains=brains,
-                        candidate_env=candidate_env,
-                    )
-                    update_step += 1
-                    best = max(results, key=lambda result: result.reward)
-                    parse_rate = sum(result.brain is not None for result in results) / len(results)
-                    recent_rewards.append(sum(result.reward for result in results) / len(results))
-                    recent_parse_ok.append(parse_rate)
-                    # The policy update scores all sampled router choices from the
-                    # same state. For the next prefix, keep the best sampled action:
-                    # this turns each episode into a cheap on-policy beam of width
-                    # GROUP_SIZE while still applying exactly one env action per tick.
-                    if best.action is None:
-                        from CrisisWorldCortex.models import CrisisworldcortexAction, NoOp
+                update_step += 1
+                best = max(results, key=lambda result: result.reward)
+                parse_rate = sum(result.brain is not None for result in results) / len(results)
+                recent_rewards.append(sum(result.reward for result in results) / len(results))
+                recent_parse_ok.append(parse_rate)
+                # The policy update scores all sampled router choices from the
+                # same state. For the next prefix, keep the best sampled action:
+                # this turns each episode into a cheap on-policy beam of width
+                # GROUP_SIZE while still applying exactly one env action per tick.
+                if best.action is None:
+                    from CrisisWorldCortex.models import CrisisworldcortexAction, NoOp
 
-                        best_action = CrisisworldcortexAction(action=NoOp())
-                    else:
-                        best_action = best.action
-                    obs = normalize_step_result(env.step(best_action))
-                    prefix_actions.append(best_action)
-                    last_reward = obs.reward if obs.reward is not None else 0.0
-                    if update_step % LOG_STEPS == 0:
-                        mean_reward = sum(recent_rewards[-LOG_STEPS:]) / min(
-                            len(recent_rewards), LOG_STEPS
-                        )
-                        mean_parse = sum(recent_parse_ok[-LOG_STEPS:]) / min(
-                            len(recent_parse_ok), LOG_STEPS
-                        )
-                        log(
-                            f"step={update_step}/{MAX_TRAIN_STEPS} task={task} "
-                            f"loss={loss:.4f} group_reward={mean_reward:.3f} "
-                            f"parse_success={mean_parse:.0%} best_brain={best.brain}"
-                        )
-                    if SAVE_STEPS > 0 and update_step % SAVE_STEPS == 0:
-                        save_router(
-                            router_model, router_tokenizer, f"{OUTPUT_DIR}/checkpoint-{update_step}"
-                        )
-                    if obs.done or update_step >= MAX_TRAIN_STEPS:
-                        break
-            finally:
-                env.close()
-    finally:
-        candidate_env.close()
+                    best_action = CrisisworldcortexAction(action=NoOp())
+                else:
+                    best_action = best.action
+                # Commit best action on the same env client. Candidate
+                # scoring left the env at an arbitrary post-step state, so
+                # we reset + replay the prefix before stepping. (GROUP_SIZE
+                # + 1) resets per tick total.
+                replay_prefix(env, task, seed, prefix_actions)
+                obs = normalize_step_result(env.step(best_action))
+                prefix_actions.append(best_action)
+                last_reward = obs.reward if obs.reward is not None else 0.0
+                if update_step % LOG_STEPS == 0:
+                    mean_reward = sum(recent_rewards[-LOG_STEPS:]) / min(
+                        len(recent_rewards), LOG_STEPS
+                    )
+                    mean_parse = sum(recent_parse_ok[-LOG_STEPS:]) / min(
+                        len(recent_parse_ok), LOG_STEPS
+                    )
+                    log(
+                        f"step={update_step}/{MAX_TRAIN_STEPS} task={task} "
+                        f"loss={loss:.4f} group_reward={mean_reward:.3f} "
+                        f"parse_success={mean_parse:.0%} best_brain={best.brain}"
+                    )
+                if SAVE_STEPS > 0 and update_step % SAVE_STEPS == 0:
+                    save_router(
+                        router_model, router_tokenizer, f"{OUTPUT_DIR}/checkpoint-{update_step}"
+                    )
+                if obs.done or update_step >= MAX_TRAIN_STEPS:
+                    break
+        finally:
+            env.close()
 
     save_router(router_model, router_tokenizer, OUTPUT_DIR)
     if PUSH_TO_HUB:
