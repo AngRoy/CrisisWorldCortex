@@ -17,7 +17,7 @@ pip install --quiet \
     "torch" \
     .
 echo "[launch] STAGE 4: deps installed"
-pip list | head -30
+pip list 2>&1 | head -30 || true
 echo "[launch] STAGE 5: gpu visible"
 nvidia-smi
 echo "[launch] STAGE 6: launching trainer"
